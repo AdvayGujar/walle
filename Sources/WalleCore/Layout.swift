@@ -9,7 +9,7 @@ public struct SlotGeometry: Sendable, Equatable {
     public var index: Int
     /// Final on-screen rectangle, before shear is applied.
     public var rect: CGRect
-    /// z translation used for the perspective transform.
+    /// z translation used for depth ordering.
     public var z: Double
     /// Core Animation stacking order; higher is nearer the viewer.
     public var zPosition: Double
@@ -30,13 +30,19 @@ public struct ScreenMetrics: Sendable, Equatable {
     }
 }
 
-/// Pure geometry for the tile corridor. No AppKit, no Core Animation, no state:
-/// the whole visual design lives here and is exercised directly by the test suite.
+/// Pure geometry for the tile corridor. No AppKit, no Core Animation, no state: the
+/// whole visual design lives here and is exercised directly by the test suite.
+///
+/// The row is always the configured number of slots wide: a centre tile with that many
+/// halved either side. Every tile sits one step further out than the last, where the
+/// step is the nearer tile's width times one minus overlap. With the default overlap of
+/// 0.5 each tile therefore covers exactly the inner half of the next one, so the overlap
+/// is identical at every step rather than piling up.
 public struct LayoutEngine: Sendable {
     public var config: Config
     public var screen: ScreenMetrics
-    /// Expanded: the centre slot shows the full rectangle preview and neighbours
-    /// make room for it. Collapsed: every tile is a parallelogram at a uniform pitch.
+    /// Expanded: the centre tile becomes the full rectangle preview and the rest of the
+    /// row is sized for that. Collapsed: every tile including the centre is a strip.
     public var expanded: Bool
 
     public init(config: Config, screen: ScreenMetrics, expanded: Bool) {
@@ -62,74 +68,88 @@ public struct LayoutEngine: Sendable {
         return CGSize(width: w, height: h)
     }
 
-    /// Pitch between neighbouring tiles when collapsed.
+    /// Centre-to-centre pitch for tiles that do not overlap.
     public var pitch: Double { config.tileWidth * (1 - config.overlap) }
 
-    /// Builds every visible slot. centerAspect is the aspect ratio (w/h) of the
-    /// focused wallpaper, used to size the centre rectangle.
+    /// Width of a strip tile. Collapsed strips are narrower, which is what makes the
+    /// resting row read as a tighter stack.
+    public var stripWidth: Double {
+        expanded ? config.tileWidth : config.tileWidth * config.collapsedWidthScale
+    }
+
+    /// Builds every visible slot. centerAspect is the aspect ratio (w/h) of the focused
+    /// wallpaper, used to size the centre rectangle.
     public func slots(count: Int, focus: Int, centerAspect: Double) -> [SlotGeometry] {
         let n = Queue.effectiveSlotCount(configured: config.slots, libraryCount: count)
         guard n > 0 else { return [] }
         let centerSlot = n / 2
+        let maxDistance = centerSlot
+
         let preview = previewSize(aspect: centerAspect)
-        let baseW = config.tileWidth
-        let baseH = config.tileHeight
-        let centreW = expanded ? Double(preview.width) : baseW
+        let centreWidth = expanded ? Double(preview.width) : stripWidth
+        let centreHeight = expanded ? Double(preview.height) : config.tileHeight
+
+        // Perspective-projected size of the tile at each distance from the centre.
+        var widths = [Double](repeating: 0, count: maxDistance + 1)
+        var heights = [Double](repeating: 0, count: maxDistance + 1)
+        widths[0] = centreWidth
+        heights[0] = centreHeight
+        var step = 1
+        while step <= maxDistance {
+            let falloff = pow(config.scaleFalloff, Double(step))
+            let z = -Double(step) * config.depthStep
+            let projection = max(0.0001, 1 - z / config.perspective)
+            widths[step] = stripWidth * falloff / projection
+            heights[step] = config.tileHeight * falloff / projection
+            step += 1
+        }
+
+        // Each step out is the nearer tile's width times one minus overlap, so a tile
+        // covers the same fraction of the next one everywhere in the row.
+        var centres = [Double](repeating: 0, count: maxDistance + 1)
+        step = 1
+        while step <= maxDistance {
+            centres[step] = centres[step - 1]
+                + widths[step - 1] * (1 - config.overlap)
+                + config.previewGap
+            step += 1
+        }
 
         var result: [SlotGeometry] = []
         result.reserveCapacity(n)
-
         for slot in 0..<n {
             let d = Queue.offset(forSlot: slot, centerSlot: centerSlot)
-            let index = Queue.index(forSlot: slot, centerSlot: centerSlot, focus: focus, count: count)
-            let ad = abs(d)
+            let libraryIndex = Queue.index(forSlot: slot, centerSlot: centerSlot,
+                                           focus: focus, count: count)
+            let distance = abs(d)
+            let sign: Double = d > 0 ? 1 : (d < 0 ? -1 : 0)
+            let isCentre = d == 0
+            let width = widths[distance]
+            let height = heights[distance]
+            let x = centerX + sign * centres[distance]
 
-            if d == 0 {
-                let w = expanded ? Double(preview.width) : baseW
-                let h = expanded ? Double(preview.height) : baseH
-                result.append(SlotGeometry(
-                    slot: slot, offset: 0, index: index,
-                    rect: CGRect(x: centerX - w / 2, y: centerY - h / 2, width: w, height: h),
-                    z: 0, zPosition: 1000, alpha: 1, shear: 0,
-                    cornerRadius: expanded ? 12 : 9, isCenter: true))
-                continue
-            }
+            // The centre only straightens up when it is actually showing the preview.
+            // While the row is resting it leans with everything else.
+            let shear = isCentre && expanded ? 0 : shearValue(forOffset: d)
 
-            let falloff = pow(config.scaleFalloff, Double(ad))
-            let preW = baseW * falloff
-            let preH = baseH * falloff
-
-            // Recede: negative z pushes the tile away from the viewer.
-            let z = -Double(ad) * config.depthStep
-            let projection = 1 - z / config.perspective  // > 1 for receding tiles
-            let projW = preW / projection
-            let projH = preH / projection
-
-            // Clear the centre rectangle, then advance by one pitch per further slot.
-            let innerEdge = centreW / 2 + config.previewGap + Double(ad - 1) * pitch
-            let preDistance = innerEdge + preW / 2
-            let distance = preDistance / projection
-            let sign: Double = d > 0 ? 1 : -1
-            let x = centerX + sign * distance
-
-            let shear = shearValue(forOffset: d)
-
+            let z = isCentre ? 0 : -Double(distance) * config.depthStep
             result.append(SlotGeometry(
-                slot: slot, offset: d, index: index,
-                rect: CGRect(x: x - projW / 2, y: centerY - projH / 2, width: projW, height: projH),
+                slot: slot, offset: d, index: libraryIndex,
+                rect: CGRect(x: x - width / 2, y: centerY - height / 2,
+                             width: width, height: height),
                 z: z,
-                zPosition: 500 - Double(ad),
-                alpha: max(config.dimFloor, 1 - config.dimFalloff * Double(ad)),
+                zPosition: isCentre ? 1000 : 500 - Double(distance),
+                alpha: isCentre ? 1
+                    : max(config.dimFloor, 1 - config.dimFalloff * Double(distance)),
                 shear: shear,
-                cornerRadius: 9,
-                isCenter: false))
+                cornerRadius: isCentre && expanded ? 12 : 9,
+                isCenter: isCentre))
         }
-
         return result
     }
 
-    /// All tiles lean the same way in uniform mode; in mirror mode they lean toward
-    /// the centre like a fan.
+    /// All tiles lean the same way in uniform mode; in mirror mode they lean toward the
+    /// centre like a fan.
     public func shearValue(forOffset d: Int) -> Double {
         switch config.shearMode {
         case .uniform:

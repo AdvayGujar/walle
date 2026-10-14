@@ -43,6 +43,8 @@ public struct Config: Sendable, Equatable {
     public var slots: Int
     public var tileWidth: Double
     public var tileHeight: Double
+    /// Strip width in the resting row, as a fraction of the expanded strip width.
+    public var collapsedWidthScale: Double
     public var tileShear: Double
     public var shearMode: ShearMode
     public var overlap: Double
@@ -71,12 +73,13 @@ public struct Config: Sendable, Equatable {
         wallpaperDirs: [String] = ["~/Downloads/wallpaper"],
         recursive: Bool = true,
         sort: SortMode = .name,
-        slots: Int = 9,
+        slots: Int = 5,
         tileWidth: Double = 100,
         tileHeight: Double = 500,
+        collapsedWidthScale: Double = 0.5,
         tileShear: Double = 0.22,
         shearMode: ShearMode = .uniform,
-        overlap: Double = 0.22,
+        overlap: Double = 0.5,
         depthStep: Double = 130,
         perspective: Double = 1200,
         scaleFalloff: Double = 0.85,
@@ -87,7 +90,7 @@ public struct Config: Sendable, Equatable {
         rowCenterYFrac: Double = 0.50,
         previewMaxWFrac: Double = 0.46,
         previewMaxHFrac: Double = 0.56,
-        previewGap: Double = 18,
+        previewGap: Double = 0,
         dimAlpha: Double = 0.35,
         animationMs: Double = 220,
         applyTo: ApplyTarget = .all,
@@ -103,6 +106,7 @@ public struct Config: Sendable, Equatable {
         self.slots = slots
         self.tileWidth = tileWidth
         self.tileHeight = tileHeight
+        self.collapsedWidthScale = collapsedWidthScale
         self.tileShear = tileShear
         self.shearMode = shearMode
         self.overlap = overlap
@@ -130,7 +134,8 @@ public struct Config: Sendable, Equatable {
     /// The order keys are written out in. Also the canonical key list.
     public static let keyOrder: [String] = [
         "wallpaper_dirs", "recursive", "sort",
-        "slots", "tile_width", "tile_height", "tile_shear", "shear_mode", "overlap",
+        "slots", "tile_width", "tile_height", "collapsed_width_scale",
+        "tile_shear", "shear_mode", "overlap",
         "depth_step", "perspective", "scale_falloff", "dim_falloff", "dim_floor",
         "expand_on_enter", "hover_promotes", "row_center_y_frac",
         "preview_max_w_frac", "preview_max_h_frac", "preview_gap",
@@ -170,6 +175,8 @@ public struct Config: Sendable, Equatable {
         case "slots": slots = parseInt(value) ?? slots
         case "tile_width": tileWidth = parseDouble(value) ?? tileWidth
         case "tile_height": tileHeight = parseDouble(value) ?? tileHeight
+        case "collapsed_width_scale":
+            collapsedWidthScale = parseDouble(value) ?? collapsedWidthScale
         case "tile_shear": tileShear = parseDouble(value) ?? tileShear
         case "shear_mode": shearMode = ShearMode.parse(value) ?? shearMode
         case "overlap": overlap = parseDouble(value) ?? overlap
@@ -205,6 +212,7 @@ public struct Config: Sendable, Equatable {
         case "slots": return String(slots)
         case "tile_width": return num(tileWidth)
         case "tile_height": return num(tileHeight)
+        case "collapsed_width_scale": return num(collapsedWidthScale)
         case "tile_shear": return num(tileShear)
         case "shear_mode": return shearMode.rawValue
         case "overlap": return num(overlap)
@@ -270,6 +278,7 @@ public struct Config: Sendable, Equatable {
         if c.slots % 2 == 0 { warnings.append("slots must be odd, using \(c.slots - 1)"); c.slots -= 1 }
         clamp("tile_width", &c.tileWidth, 24, 2000)
         clamp("tile_height", &c.tileHeight, 24, 2000)
+        clamp("collapsed_width_scale", &c.collapsedWidthScale, 0.05, 2)
         clamp("tile_shear", &c.tileShear, -2, 2)
         clamp("overlap", &c.overlap, 0, 0.9)
         clamp("depth_step", &c.depthStep, 0, 10000)
