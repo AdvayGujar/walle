@@ -104,7 +104,8 @@ public enum OptionParser {
                         throw CLIError("unknown option --\(name)", showUsage: true)
                     }
                     result.values[name, default: []].append(raw)
-                } else if spec.boolOptions.contains(body) {
+                } else if spec.boolOptions.contains(body) || body == "help" {
+                    // help is accepted everywhere so --help never needs declaring per command.
                     result.bools.insert(body)
                 } else if spec.valueOptions.contains(body) {
                     guard index + 1 < tokens.count else {
