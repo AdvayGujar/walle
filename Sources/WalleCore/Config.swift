@@ -88,7 +88,7 @@ public struct Config: Sendable, Equatable {
         expandOnEnter: Bool = true,
         applyTo: ApplyTarget = .all,
         fillMode: FillMode = .fill,
-        thumbMaxPx: Int = 512,
+        thumbMaxPx: Int = 1600,
         previewMaxPx: Int = 1600,
         typeToFilter: Bool = true,
         logLevel: String = "warn"

@@ -228,7 +228,7 @@ display instead of being pinned to one resolution.
 | sort | name | name, mtime or random |
 | apply_to | all | all screens, or only the one under the pointer |
 | fill_mode | fill | fill, fit, stretch or center |
-| thumb_max_px | 512 | Row thumbnail size |
+| thumb_max_px | 1600 | Thumbnail size, in pixels on the long side |
 | preview_max_px | 1600 | Preview thumbnail size |
 | type_to_filter | true | Reserved |
 | log_level | warn | silent, error, warn |
@@ -389,27 +389,50 @@ Measured on an Apple silicon Mac with a 1512×982 Retina display and a 5-image l
 | `walle` binary, stripped | 392 KB |
 | `walle-picker` binary, stripped | 523 KB |
 | CLI start (`walle --version`) | < 10 ms |
-| Picker: process start to window on screen | ~153 ms |
-| Peak memory while the picker is open | ~66 MB |
+| Picker: process start to window on screen | ~130 ms |
+| Peak memory while the picker is open | ~47 MB |
 | Processes alive when closed | 0 |
 | Thumbnail cache | 2.3 MB for 38 MB of source images |
 
-Two of these miss the targets set at the start of the project (120 ms and 50 MB), and it is
-worth being straight about why.
-
-**Cold start, 153 ms.** Roughly 65 ms of it is the operating system loading AppKit into the
-process, before any walle code runs — the picker is the only binary that links it, and that
+**Cold start, ~130 ms.** Roughly 65 ms of it is the operating system loading AppKit into the
+process, before any walle code runs. The picker is the only binary that links AppKit and that
 cost is not avoidable while it does. The rest is window creation at screen-saver level and
 asking the window server to focus us, which we must do or the keyboard would not work.
 
-**Memory, 66 MB.** It breaks down as: 16 MB framework baseline, 22 MB for the full-screen
-Retina backing store, about 20 MB of decoded thumbnails, and the remainder window and layer
-overhead. The backing store is the cost of dimming the whole screen; the thumbnails are a
-deliberate trade to keep rotation smooth. The decoded-image cache was previously allowed to
-grow to roughly 80 MB and is now bounded to about 24 MB, which matters over a long session
-rather than at peak.
+**Memory, ~47 MB.** It breaks down as: 16 MB framework baseline, 22 MB for the full-screen
+Retina backing store, and the remainder decoded thumbnails, window and layer overhead. The
+backing store is simply the cost of dimming the whole screen.
 
-If memory matters more than rotation smoothness, `preview_max_px` can be lowered.
+The decoded-image cache is bounded rather than unbounded. At one point it was permitted to
+grow to roughly 80 MB, and separately the picker preloaded oversized images for the centred
+card and its two neighbours. Removing that preload and using one correctly sized thumbnail for
+every card is what took this from 66 MB to 47 MB — while making the images *sharper*, because
+the previous arrangement was serving the cards thumbnails that were far too small.
+
+Both numbers are now inside the targets set at the start of the project (120 ms and 50 MB).
+
+### Sizing thumbnails for your display
+
+This is easy to get wrong, and the symptom is subtle: slightly soft images rather than anything
+obviously broken. The cards are taller than they are wide, and a landscape wallpaper is
+aspect-filled into them, so it is the image **width** that gets stretched. A card rendering at
+654 x 850 points on a 2x display covers 1308 x 1700 device pixels, and to fill that a 16:9
+image needs about 1700 x 16/9 — but since aspect-fill crops, what matters is the short side
+covering the box height: about `850 * 16/9 = 1512` pixels on the long side.
+
+For a 1512-wide screen at 2x:
+
+| Card | Rendered box | Needs |
+| --- | --- | --- |
+| Collapsed centre | 654 x 850 px | ~1512 px |
+| Collapsed neighbour | 606 x 662 px | ~1176 px |
+| Expanded preview | 1386 x 630 px | ~1386 px |
+
+So the default `thumb_max_px = 1600` covers a display up to roughly 1600 points wide. The
+cards scale with the screen, so on a larger display raise it to match:
+
+    walle config set thumb_max_px 2000
+    walle cache --rebuild
 
 ---
 
