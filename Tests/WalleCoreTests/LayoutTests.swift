@@ -219,8 +219,18 @@ struct LayoutTests {
         // Shift is maximal at the top and bottom edges, and opposite in sign.
         #expect(LayoutEngine.contains(CGPoint(x: midX + shift, y: minY + height), in: tile))
         #expect(LayoutEngine.contains(CGPoint(x: midX - shift, y: minY), in: tile))
-        #expect(!LayoutEngine.contains(CGPoint(x: midX, y: minY + height), in: tile))
-        #expect(!LayoutEngine.contains(CGPoint(x: midX, y: minY), in: tile))
+        // The top edge lies exactly within midX + shift +/- half, so the lean is measured
+        // rather than assumed. (An earlier version of this test asserted that midX itself
+        // was outside at the edges, which only held while the cards were narrow enough for
+        // the lean to clear them entirely.)
+        #expect(!LayoutEngine.contains(
+            CGPoint(x: midX + shift + half + 0.5, y: minY + height), in: tile))
+        #expect(!LayoutEngine.contains(
+            CGPoint(x: midX + shift - half - 0.5, y: minY + height), in: tile))
+        #expect(!LayoutEngine.contains(
+            CGPoint(x: midX - shift + half + 0.5, y: minY), in: tile))
+        #expect(!LayoutEngine.contains(
+            CGPoint(x: midX - shift - half - 0.5, y: minY), in: tile))
 
         // Just outside the mid-section is rejected.
         #expect(!LayoutEngine.contains(CGPoint(x: midX + half + 0.5, y: midY), in: tile))
