@@ -288,4 +288,4 @@ auto-rotation daemon. Each would mean a permanently running process or a much la
 
 ## License
 
-MIT.
+MIT — see [LICENSE](LICENSE).
