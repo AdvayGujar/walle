@@ -77,22 +77,49 @@ opening. Add `--prune` to drop cache entries whose source has been deleted.
 
 ### 4. Set up the hotkey
 
-    brew install koekeishiya/formulae/skhd
-    skhd --start-service
+**Grant Accessibility first.** skhd aborts immediately without it; if it is already running
+as a service, launchd silently restarts it, so it looks like it is running while doing
+nothing and the hotkey never fires.
 
-Then add a binding to `~/.config/skhd/skhdrc`:
+1. Install it:
+
+        brew install koekeishiya/formulae/skhd
+
+2. Add skhd to `System Settings → Privacy & Security → Accessibility`. Click **+**, press
+   **⌘⇧G**, type `/opt/homebrew/bin/skhd`, add it and switch it on.
+
+   skhd will not appear in that list by itself, because it exits before macOS can prompt. You
+   have to add it by hand. If you later upgrade it with brew, the grant is lost and you must
+   remove and re-add it.
+
+3. Start it:
+
+        skhd --start-service && skhd --reload
+
+Then add the binding to `~/.config/skhd/skhdrc`:
 
     cmd + alt - w : ~/.local/bin/walle
 
+Add it once. Two bindings mean the hotkey runs walle twice, and the second instance sees the
+lock already held and closes the first, so the picker just flashes:
+
+    grep -q walle ~/.config/skhd/skhdrc || echo 'cmd + alt - w : ~/.local/bin/walle' >> ~/.config/skhd/skhdrc
+    skhd --reload
+
 A bare `walle` with no argument opens the picker, which is exactly what a hotkey should run.
 
-**You must also grant Accessibility permission to skhd** in System Settings → Privacy &
-Security → Accessibility. skhd cannot receive global keystrokes without it, and no command
-line tool can grant this for you.
+Finally, verify the whole chain:
 
-If you would rather not run skhd, a macOS Shortcut with a keyboard shortcut can run
-`~/.local/bin/walle` instead. That adds no process at all, at the cost of a slightly slower
-launch.
+    walle doctor
+
+That checks the config file, the library, the picker binary, the thumbnail cache, the
+history, whether skhd is installed, whether the binding exists **exactly once**, and whether
+skhd is aborting for lack of Accessibility access. It exits non-zero if anything is wrong, so
+it is usable from a script.
+
+If you would rather not run skhd at all, a macOS Shortcut with a keyboard shortcut can run
+`~/.local/bin/walle` instead. That adds no process whatsoever, at the cost of a slightly
+slower launch.
 
 ---
 
@@ -214,6 +241,105 @@ Example:
 
 ---
 
+## Making it yours
+
+Every visual and behavioural value is a config key, settable without rebuilding anything.
+Changes take effect the next time the picker opens. Some starting points:
+
+**Cards wider, narrower, more or less slanted**
+
+    walle config set card_width 340     # wider
+    walle config set card_width 120     # narrower
+    walle config set card_skew -0.4     # more slanted
+    walle config set card_skew -0.1     # almost upright
+    walle config set card_skew 0        # perfectly upright rectangles
+    walle config set card_gap 40        # more space between cards
+
+`card_width` applies to both states: the resting row and the expanded card's neighbours.
+
+**A different shape for the preview**
+
+    walle config set expanded_card_width 1100
+    walle config set expanded_card_height 620
+    walle config set card_corner_radius 24
+    walle config set card_border_width 6
+    walle config set card_border_color 30D158    # green instead of orange
+
+**Faster or slower motion**
+
+    walle config set animation_ms 180    # snappier
+    walle config set animation_ms 600    # more leisurely
+
+`animation_ms` governs both the expand morph and the time taken by one arrow-key step.
+
+**More or fewer cards on screen**
+
+    walle config set slots 7     # must be odd, so there is a true centre
+
+If your library is larger than `slots`, the cards always have somewhere to come from and the
+rotation glides. If the library is smaller than or equal to `slots`, every wallpaper is on
+screen at once, so the one that wraps has to jump from one end of the row to the other.
+
+**Different placement and background**
+
+    walle config set row_center_y_frac 0.35   # sit the row lower
+    walle config set row_center_y_frac 0.7    # sit it higher
+    walle config set dim_alpha 0              # no backdrop dimming at all
+    walle config set dim_alpha 0.7            # very dark backdrop
+    walle config set expanded_neighbour_alpha 0.3   # let neighbours show while expanded
+
+**Bring back the fade across the resting row**
+
+By default every card is fully opaque. If you prefer the outer ones dimmed:
+
+    walle config set dim_falloff 0.2     # each step out fades by 20%
+    walle config set dim_floor 0.4
+
+**How the wallpaper is applied**
+
+    walle config set apply_to active    # only the screen under the pointer
+    walle config set apply_to all       # every screen (default)
+    walle config set fill_mode fill     # fill the screen, cropping the overflow
+    walle config set fill_mode fit      # show the whole image, with empty space
+    walle config set fill_mode stretch  # distort to fit exactly
+    walle config set fill_mode center   # no scaling, centred
+
+**Library behaviour**
+
+    walle config set sort mtime         # newest first
+    walle config set sort random
+    walle config set recursive false    # do not descend into subdirectories
+    walle config set wallpaper_dirs ~/Pictures/Walls:/Volumes/Ext/Walls
+
+**See what you have changed**
+
+    walle config list                   # every key and its current value
+    walle config path                   # where the file lives
+    walle config edit                   # open it in $EDITOR
+
+**Start over**
+
+    walle config unset card_width       # restore one key to its default
+    rm ~/.config/walle/config           # or throw the whole thing away
+
+Every key and its default is listed under Configuration above, and the full list is always
+available with `walle config list`.
+
+### Previewing a change without opening the picker
+
+`walle-picker` can render the row to a PNG offscreen, which is the fastest way to iterate on
+the geometry:
+
+    .build/scratch/release/walle-picker --snapshot /tmp/shot.png
+    .build/scratch/release/walle-picker --snapshot /tmp/resting.png --collapsed
+    .build/scratch/release/walle-picker --snapshot /tmp/mid.png --transition 0.5
+    .build/scratch/release/walle-picker --dump-geometry
+
+`--dump-geometry` prints every card's exact rectangle, width, height, skew and opacity as
+text, which is often more useful than the picture.
+
+---
+
 ## How it works
 
 Two binaries, and the split is deliberate.
@@ -294,10 +420,50 @@ The window must be the key window of the active application. walle asks for focu
 but if another app steals it back, click once on the overlay and keys will work. This is
 also what happens if the process is launched by something that does not grant activation.
 
-**The hotkey does nothing.**
-skhd needs Accessibility permission. Check `System Settings → Privacy & Security →
-Accessibility`. `walle doctor` will tell you whether skhd is installed, running, and whether
-a binding to walle exists.
+**The hotkey does nothing, and `skhd --reload` says "could not locate existing instance".**
+
+That message means skhd is not running at all. The usual cause is that **skhd aborts
+immediately without Accessibility permission** — it does not sit there waiting, it exits, and
+if it was started as a service, launchd silently restarts it, so it looks like it is running
+while doing nothing. Its one line of explanation goes to a log file:
+
+    cat /tmp/skhd_$(whoami).err.log
+    # skhd: must be run with accessibility access! abort..
+
+`walle doctor` now reads that log for you and will report it.
+
+To fix it:
+
+1. Stop the crash-looping daemon first: `skhd --stop-service`
+2. Open `System Settings → Privacy & Security → Accessibility`
+3. Click **+**, press **⌘⇧G**, type `/opt/homebrew/bin/skhd`, add it, and switch it **on**
+4. Start it again: `skhd --start-service && skhd --reload`
+5. `walle doctor` to confirm
+
+skhd does not appear in that list on its own, because it aborts before macOS can prompt. You
+have to add it by hand. **If it still aborts after granting permission, remove it from the
+list and add it again** — macOS caches the grant per binary and loses it when the binary is
+replaced, which also happens after `brew upgrade skhd`.
+
+**The picker flashes open and immediately closes when I press the hotkey.**
+
+There is almost certainly more than one binding to walle in `~/.config/skhd/skhdrc`. Two
+bindings mean the hotkey runs walle twice; the second instance sees the lock already held and
+signals the first to close. Keep exactly one line:
+
+    grep -v walle ~/.config/skhd/skhdrc > /tmp/skhdrc.new
+    echo 'cmd + alt - w : ~/.local/bin/walle' >> /tmp/skhdrc.new
+    mv /tmp/skhdrc.new ~/.config/skhd/skhdrc
+    skhd --reload
+
+`walle doctor` reports duplicate bindings rather than just checking that one exists.
+
+**The picker opens but the keyboard does nothing.**
+
+Different problem from the above: skhd is working and walle is running, but the window is not
+the key window. The window must be key for the application to receive keystrokes, and walle
+asks for focus on launch. If another app steals it back, click once on the overlay and the
+keys will start working.
 
 **History is empty.**
 walle writes history to `~/Library/Application Support/walle` only after the wallpaper has
