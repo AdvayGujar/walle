@@ -17,6 +17,7 @@ DIST="$ROOT/dist"
 PREFIX="${HOME}/.local/share/walle"
 BIN_DIR="${HOME}/.local/bin"
 NO_CONFIG=0
+CLEAN=0
 DRY_RUN=0
 
 usage() {
@@ -26,6 +27,7 @@ Usage: $(basename "$0") [options]
   --prefix DIR   install root (default: $HOME/.local/share/walle)
   --bin-dir DIR  directory for the 'walle' command (default: $HOME/.local/bin)
   --no-config    do not create a default config file
+  --clean        remove the .build intermediates after installing
   --dry-run      print what would happen and change nothing
   -h, --help     show this help
 EOF
@@ -64,6 +66,7 @@ while [ $# -gt 0 ]; do
         --bin-dir=*)
             BIN_DIR="${1#--bin-dir=}"; shift ;;
         --no-config) NO_CONFIG=1; shift ;;
+        --clean) CLEAN=1; shift ;;
         --dry-run) DRY_RUN=1; shift ;;
         -h|--help) usage; exit 0 ;;
         *) echo "install.sh: unknown option '$1'" >&2; usage >&2; exit 2 ;;
@@ -202,3 +205,32 @@ cat <<EOF
   access in System Settings > Privacy & Security > Accessibility; no CLI can
   grant that.
 EOF
+
+# SwiftPM leaves a large intermediate directory behind. None of it is needed to run walle,
+# so offer to reclaim it rather than leaving the user to wonder why the project is 100 MB.
+if [ "$DRY_RUN" -eq 0 ] && [ -d "$ROOT/.build" ]; then
+    SIZE="$(du -sh "$ROOT/.build" | awk '{print $1}')"
+    if [ "$CLEAN" -eq 1 ]; then
+        echo
+        echo "==> Removing build intermediates ($SIZE)"
+        rm -rf "$ROOT/.build"
+    elif [ -t 0 ]; then
+        echo
+        printf '==> %s of build intermediates are no longer needed. Remove them? [y/N] ' "$SIZE"
+        read -r REPLY || REPLY=""
+        case "$REPLY" in
+            [yY]|[yY][eE][sS])
+                rm -rf "$ROOT/.build"
+                echo "    removed"
+                ;;
+            *)
+                echo "    kept; ./scripts/clean.sh reclaims it at any time"
+                ;;
+        esac
+    else
+        echo
+        echo "==> $SIZE of build intermediates remain in $ROOT/.build"
+        echo "    they are not needed to run walle."
+        echo "    ./scripts/clean.sh reclaims them, or use install.sh --clean next time."
+    fi
+fi

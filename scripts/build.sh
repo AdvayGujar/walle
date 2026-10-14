@@ -100,3 +100,9 @@ echo "==> Sizes"
 echo "    dist/bin/walle              $(human_size "$DIST/bin/walle")  ($(byte_size "$DIST/bin/walle") bytes)"
 echo "    Walle.app picker            $(human_size "$MACOS/walle-picker")  ($(byte_size "$MACOS/walle-picker") bytes)"
 echo "    Walle.app bundle            $(human_size "$APP")"
+
+# The SwiftPM intermediates are large, dominated by precompiled macOS SDK modules, and are
+# never shipped. Say so, or a 117 MB .build next to a 1 MB app looks alarming and unexplained.
+if [ -d "$ROOT/.build" ]; then
+    echo "    .build intermediates        $(human_size "$ROOT/.build")  (not shipped; ./scripts/clean.sh reclaims it)"
+fi
