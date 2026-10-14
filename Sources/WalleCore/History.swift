@@ -1,0 +1,261 @@
+import Foundation
+
+/// One recorded wallpaper application.
+public struct HistoryEntry: Codable, Sendable, Equatable {
+    public var path: String
+    public var appliedAt: Date
+    public var screenUUID: String?
+    public var mode: String
+
+    public init(path: String, appliedAt: Date, screenUUID: String? = nil, mode: String) {
+        self.path = path
+        self.appliedAt = appliedAt
+        self.screenUUID = screenUUID
+        self.mode = mode
+    }
+}
+
+/// Small mutable state the picker restores between launches.
+public struct WalleState: Codable, Sendable, Equatable {
+    public var schemaVersion: Int
+    public var lastAppliedPath: String?
+    public var lastFocusedIndex: Int?
+
+    public init(schemaVersion: Int = 1, lastAppliedPath: String? = nil, lastFocusedIndex: Int? = nil) {
+        self.schemaVersion = schemaVersion
+        self.lastAppliedPath = lastAppliedPath
+        self.lastFocusedIndex = lastFocusedIndex
+    }
+}
+
+/// Append-only, newline-delimited JSON history of applied wallpapers.
+///
+/// Each line is one `HistoryEntry` encoded with ISO 8601 dates, so the file stays
+/// diffable and readable by plain tools. Readers tolerate a truncated or corrupt
+/// line by skipping it; only real I/O failures on an existing file are thrown.
+public struct HistoryStore: Sendable {
+    private let fileURL: URL
+    // FileManager is documented as thread-safe; we only use it synchronously.
+    nonisolated(unsafe) private let fileManager: FileManager
+
+    public init(fileURL: URL, fileManager: FileManager = .default) {
+        self.fileURL = fileURL
+        self.fileManager = fileManager
+    }
+
+    /// Appends one line, creating the parent directory lazily. The whole line is
+    /// written with a single `write(2)`, so a concurrent reader sees either the
+    /// complete line or nothing.
+    public func append(_ entry: HistoryEntry) throws {
+        try fileManager.createDirectory(at: fileURL.deletingLastPathComponent(),
+                                        withIntermediateDirectories: true)
+        var line = try Self.makeEncoder().encode(entry)
+        line.append(0x0A)
+        if !fileManager.fileExists(atPath: fileURL.path) {
+            _ = fileManager.createFile(atPath: fileURL.path, contents: nil)
+        }
+        let handle = try FileHandle(forWritingTo: fileURL)
+        defer { try? handle.close() }
+        try handle.seekToEnd()
+        try handle.write(contentsOf: line)
+    }
+
+    /// All entries, newest first. A missing file is an empty history. Corrupt lines
+    /// are skipped; an unreadable existing file throws.
+    public func entries(limit: Int? = nil) throws -> [HistoryEntry] {
+        guard fileManager.fileExists(atPath: fileURL.path) else { return [] }
+        let data = try Data(contentsOf: fileURL)
+        let decoder = Self.makeDecoder()
+        var newestFirst: [HistoryEntry] = []
+        for line in data.split(separator: 0x0A) where !line.isEmpty {
+            if let entry = try? decoder.decode(HistoryEntry.self, from: line) {
+                newestFirst.append(entry)
+            }
+        }
+        newestFirst.reverse()
+        guard let limit else { return newestFirst }
+        guard limit > 0 else { return [] }
+        return Array(newestFirst.prefix(limit))
+    }
+
+    /// Truncates the file to empty. A missing file is not an error.
+    public func clear() throws {
+        guard fileManager.fileExists(atPath: fileURL.path) else { return }
+        try Data().write(to: fileURL, options: .atomic)
+    }
+
+    /// Path of the newest entry, or nil for an empty history.
+    public func lastAppliedPath() throws -> String? {
+        try entries(limit: 1).first?.path
+    }
+
+    private static func makeEncoder() -> JSONEncoder {
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        encoder.outputFormatting = [.sortedKeys]
+        return encoder
+    }
+
+    private static func makeDecoder() -> JSONDecoder {
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        return decoder
+    }
+}
+
+/// Atomic store for the picker's small mutable state.
+public struct StateStore: Sendable {
+    private let fileURL: URL
+    nonisolated(unsafe) private let fileManager: FileManager
+
+    public init(fileURL: URL, fileManager: FileManager = .default) {
+        self.fileURL = fileURL
+        self.fileManager = fileManager
+    }
+
+    /// A missing, empty or corrupt file reads as the default state; never throws.
+    public func load() -> WalleState {
+        guard fileManager.fileExists(atPath: fileURL.path),
+              let data = fileManager.contents(atPath: fileURL.path),
+              !data.isEmpty,
+              let state = try? JSONDecoder().decode(WalleState.self, from: data) else {
+            return WalleState()
+        }
+        return state
+    }
+
+    /// Writes atomically, creating the parent directory lazily.
+    public func save(_ state: WalleState) throws {
+        try fileManager.createDirectory(at: fileURL.deletingLastPathComponent(),
+                                        withIntermediateDirectories: true)
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        try encoder.encode(state).write(to: fileURL, options: .atomic)
+    }
+}
+
+/// How the next wallpaper should be chosen.
+public enum SelectionMode: Sendable, Equatable {
+    case explicit(String)
+    case random
+    case next
+    case previous
+    case last
+}
+
+/// Why a selection could not be resolved.
+public enum SelectionError: Error, Equatable, CustomStringConvertible {
+    case emptyLibrary
+    case noHistory
+    case pathNotFound(String)
+
+    public var description: String {
+        switch self {
+        case .emptyLibrary:
+            return "the wallpaper library is empty"
+        case .noHistory:
+            return "no history entry points at an existing wallpaper"
+        case .pathNotFound(let path):
+            return "wallpaper file does not exist: \(path)"
+        }
+    }
+}
+
+/// Pure selection logic over a scanned library and the recorded history.
+public enum Selection {
+
+    public static func resolve(_ mode: SelectionMode,
+                               library: [Wallpaper],
+                               history: [HistoryEntry],
+                               currentPath: String?,
+                               seed: UInt64) throws -> Wallpaper {
+        switch mode {
+        case .explicit(let path):
+            return try resolveExplicit(path, library: library)
+
+        case .random:
+            guard !library.isEmpty else { throw SelectionError.emptyLibrary }
+            return LibrarySort.sort(library, mode: .random, seed: seed)[0]
+
+        case .next:
+            guard !library.isEmpty else { throw SelectionError.emptyLibrary }
+            guard let currentPath, let index = index(of: currentPath, in: library) else {
+                return library[0]
+            }
+            return library[(index + 1) % library.count]
+
+        case .previous:
+            guard !library.isEmpty else { throw SelectionError.emptyLibrary }
+            guard let currentPath, let index = index(of: currentPath, in: library) else {
+                return library[library.count - 1]
+            }
+            return library[(index - 1 + library.count) % library.count]
+
+        case .last:
+            guard let entry = newestExisting(history) else { throw SelectionError.noHistory }
+            return wallpaper(for: entry.path, library: library)
+        }
+    }
+
+    // MARK: - Helpers
+
+    /// An explicit path wins if the library already holds that file (canonical
+    /// comparison via standardizedFileURL.path); otherwise it is read from disk.
+    private static func resolveExplicit(_ path: String, library: [Wallpaper]) throws -> Wallpaper {
+        let target = walleStandardizedPath(path)
+        if let match = library.first(where: { walleStandardizedPath($0.path) == target }) {
+            return match
+        }
+        guard FileManager.default.fileExists(atPath: target) else {
+            throw SelectionError.pathNotFound(path)
+        }
+        return makeWallpaper(at: target)
+    }
+
+    private static func index(of path: String, in library: [Wallpaper]) -> Int? {
+        let target = walleStandardizedPath(path)
+        return library.firstIndex { walleStandardizedPath($0.path) == target }
+    }
+
+    /// The most recent entry whose file still exists. Scanning in order and keeping
+    /// the maximum appliedAt makes this robust to either ordering; ties keep the
+    /// first entry seen.
+    private static func newestExisting(_ history: [HistoryEntry]) -> HistoryEntry? {
+        var best: HistoryEntry?
+        for entry in history {
+            guard FileManager.default.fileExists(atPath: entry.path) else { continue }
+            if best == nil || entry.appliedAt > best!.appliedAt {
+                best = entry
+            }
+        }
+        return best
+    }
+
+    private static func wallpaper(for path: String, library: [Wallpaper]) -> Wallpaper {
+        let target = walleStandardizedPath(path)
+        if let match = library.first(where: { walleStandardizedPath($0.path) == target }) {
+            return match
+        }
+        return makeWallpaper(at: target)
+    }
+
+    private static func makeWallpaper(at path: String) -> Wallpaper {
+        let url = URL(fileURLWithPath: path)
+        let attributes = try? FileManager.default.attributesOfItem(atPath: path)
+        let modifiedAt = (attributes?[.modificationDate] as? Date) ?? Date(timeIntervalSince1970: 0)
+        let fileSize = (attributes?[.size] as? NSNumber)?.intValue ?? 0
+        return Wallpaper(
+            url: url,
+            path: path,
+            name: url.lastPathComponent,
+            modifiedAt: modifiedAt,
+            fileSize: fileSize,
+            aspectRatio: walleImageAspectRatio(at: url))
+    }
+}
+
+/// Normalizes a path without resolving symlinks, so `./x`, `a/../x` and `/abs/x`
+/// compare equal.
+private func walleStandardizedPath(_ path: String) -> String {
+    URL(fileURLWithPath: path).standardizedFileURL.path
+}

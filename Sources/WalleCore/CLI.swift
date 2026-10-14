@@ -173,7 +173,11 @@ public struct CLI {
         case "list": return try list(rest, environment: environment)
         case "dir": return try dir(rest, environment: environment)
         case "config": return try config(rest, environment: environment)
-        case "pick", "set", "cache", "history", "current", "doctor":
+        case "set": return try set(rest, environment: environment)
+        case "current": return try current(rest, environment: environment)
+        case "history": return try history(rest, environment: environment)
+        case "cache": return try cache(rest, environment: environment)
+        case "pick", "doctor":
             throw CLIError("'\(command)' is not implemented yet")
         default:
             throw CLIError("unknown command '\(command)'", showUsage: true)
@@ -212,6 +216,12 @@ public struct CLI {
 
         COMMANDS
           list                       List wallpapers in the configured directories
+          set <path>                 Apply a wallpaper
+          set --random|--next|--prev|--last
+                                     Apply a wallpaper chosen from the library
+          current                    Print the current desktop wallpaper
+          history                    Show recently applied wallpapers
+          cache                      Build the thumbnail cache
           dir list                   Show wallpaper directories and their image counts
           dir add <path>             Add a wallpaper directory
           dir remove <path>          Remove a wallpaper directory
@@ -487,6 +497,219 @@ public struct CLI {
             environment.output.out("using \(root)")
         }
         return CLIExit.success.rawValue
+    }
+
+    // MARK: - set / current, delegated to walle-picker
+
+    /// walle does not link AppKit. Anything that needs NSWorkspace is handed to the
+    /// picker binary, which costs one exec instead of loading AppKit twice.
+    static func locatePicker(_ environment: CLIEnvironment) throws -> URL {
+        guard let url = PickerLocator.locate(environment: environment.environment) else {
+            throw CLIError("could not find the walle-picker binary; "
+                           + "set WALLE_PICKER or run walle install")
+        }
+        return url
+    }
+
+    static func runPicker(_ arguments: [String], _ environment: CLIEnvironment) throws -> Int32 {
+        let process = Process()
+        process.executableURL = try locatePicker(environment)
+        process.arguments = arguments
+        let outPipe = Pipe()
+        let errPipe = Pipe()
+        process.standardOutput = outPipe
+        process.standardError = errPipe
+        try process.run()
+        // Read to EOF before waiting so a chatty child cannot fill a pipe and deadlock.
+        let outData = outPipe.fileHandleForReading.readDataToEndOfFile()
+        let errData = errPipe.fileHandleForReading.readDataToEndOfFile()
+        process.waitUntilExit()
+
+        if let text = String(data: outData, encoding: .utf8) {
+            for line in text.split(separator: "\n", omittingEmptySubsequences: true) {
+                environment.output.out(String(line))
+            }
+        }
+        if let text = String(data: errData, encoding: .utf8) {
+            for line in text.split(separator: "\n", omittingEmptySubsequences: true) {
+                environment.output.err(String(line))
+            }
+        }
+        return process.terminationStatus
+    }
+
+    static func selectionMode(_ options: ParsedOptions) throws -> SelectionMode {
+        var modes: [SelectionMode] = []
+        if let path = options.positionals.first { modes.append(.explicit(path)) }
+        if options.has("random") { modes.append(.random) }
+        if options.has("next") { modes.append(.next) }
+        if options.has("prev") { modes.append(.previous) }
+        if options.has("last") { modes.append(.last) }
+        guard modes.count == 1 else {
+            throw CLIError(modes.isEmpty
+                ? "set needs a path or one of --random, --next, --prev, --last"
+                : "set accepts only one of a path, --random, --next, --prev, --last")
+        }
+        return modes[0]
+    }
+
+    static func set(_ tokens: [String], environment: CLIEnvironment) throws -> Int32 {
+        let options = try OptionParser.parse(
+            tokens,
+            spec: OptionSpec(boolOptions: ["random", "next", "prev", "last", "dry-run", "json"],
+                             shortAliases: ["j": "json", "h": "help"]))
+        if options.has("help") { return help(environment) }
+
+        let (config, warnings) = loadConfig(environment)
+        reportWarnings(warnings, environment, config: config)
+        let mode = try selectionMode(options)
+
+        let library = LibraryScanner(config: config, home: environment.paths.home).scan().wallpapers
+        let history = (try? HistoryStore(fileURL: environment.paths.historyFile).entries()) ?? []
+        let state = StateStore(fileURL: environment.paths.stateFile).load()
+
+        let chosen: Wallpaper
+        do {
+            chosen = try Selection.resolve(
+                mode,
+                library: library,
+                history: history,
+                currentPath: state.lastAppliedPath,
+                seed: UInt64(Date().timeIntervalSince1970 * 1000))
+        } catch let error as SelectionError {
+            throw CLIError(error.description)
+        }
+
+        if options.has("dry-run") {
+            if options.has("json") {
+                try emitJSON(["wouldApply": chosen.path, "dryRun": true], to: environment)
+            } else {
+                environment.output.out(chosen.path)
+            }
+            return CLIExit.success.rawValue
+        }
+
+        var pickerArguments = ["--apply", chosen.path]
+        if options.has("json") { pickerArguments.append("--json") }
+        return try runPicker(pickerArguments, environment)
+    }
+
+    static func current(_ tokens: [String], environment: CLIEnvironment) throws -> Int32 {
+        let options = try OptionParser.parse(
+            tokens, spec: OptionSpec(boolOptions: ["json"],
+                                     shortAliases: ["j": "json", "h": "help"]))
+        if options.has("help") { return help(environment) }
+        var pickerArguments = ["--current"]
+        if options.has("json") { pickerArguments.append("--json") }
+        return try runPicker(pickerArguments, environment)
+    }
+
+    // MARK: - history
+
+    static func history(_ tokens: [String], environment: CLIEnvironment) throws -> Int32 {
+        let options = try OptionParser.parse(
+            tokens, spec: OptionSpec(valueOptions: ["limit"], boolOptions: ["json", "clear"],
+                                     shortAliases: ["j": "json", "h": "help"]))
+        if options.has("help") { return help(environment) }
+
+        let store = HistoryStore(fileURL: environment.paths.historyFile)
+        if options.has("clear") {
+            try store.clear()
+            environment.output.out("history cleared")
+            return CLIExit.success.rawValue
+        }
+
+        let entries = try store.entries(limit: try options.int("limit"))
+        if options.has("json") {
+            try emitJSON(entries.map { entry -> [String: Any] in
+                var object: [String: Any] = [
+                    "path": entry.path,
+                    "appliedAt": entry.appliedAt.formatted(.iso8601),
+                    "mode": entry.mode,
+                ]
+                if let uuid = entry.screenUUID { object["screenUUID"] = uuid }
+                return object
+            }, to: environment)
+        } else {
+            for entry in entries {
+                environment.output.out(entry.appliedAt.formatted(.iso8601)
+                                       + "  " + entry.mode + "  " + entry.path)
+            }
+            if entries.isEmpty { environment.output.err("walle: no history yet") }
+        }
+        return CLIExit.success.rawValue
+    }
+
+    // MARK: - cache
+
+    static func cache(_ tokens: [String], environment: CLIEnvironment) throws -> Int32 {
+        let options = try OptionParser.parse(
+            tokens, spec: OptionSpec(boolOptions: ["rebuild", "prune", "json"],
+                                     shortAliases: ["j": "json", "h": "help"]))
+        if options.has("help") { return help(environment) }
+
+        let (config, warnings) = loadConfig(environment)
+        reportWarnings(warnings, environment, config: config)
+
+        let scan = LibraryScanner(config: config, home: environment.paths.home).scan()
+        for warning in scan.warnings { environment.output.err("walle: warning: " + warning) }
+
+        let cacheDir = environment.paths.thumbnailsDir
+        if options.has("rebuild") {
+            try? FileManager.default.removeItem(at: cacheDir)
+        }
+        let cache = ThumbnailCache(directory: cacheDir,
+                                   rowMaxPx: config.thumbMaxPx,
+                                   previewMaxPx: config.previewMaxPx)
+
+        let started = Date()
+        var generated = 0
+        var failed = 0
+        var failures: [String] = []
+
+        for wallpaper in scan.wallpapers {
+            for sizeClass in [ThumbSizeClass.row, ThumbSizeClass.preview] {
+                if cache.existingThumbnail(for: wallpaper, sizeClass: sizeClass) != nil {
+                    continue
+                }
+                do {
+                    _ = try cache.thumbnail(for: wallpaper, sizeClass: sizeClass)
+                    generated += 1
+                } catch {
+                    failed += 1
+                    failures.append(wallpaper.name + " (" + sizeClass.rawValue + "): "
+                                    + String(describing: error))
+                }
+            }
+        }
+
+        var pruned = 0
+        if options.has("prune") {
+            pruned = (try? cache.prune(keeping: scan.wallpapers)) ?? 0
+        }
+
+        let elapsed = Date().timeIntervalSince(started)
+        for failure in failures { environment.output.err("walle: " + failure) }
+
+        if options.has("json") {
+            try emitJSON([
+                "wallpapers": scan.wallpapers.count,
+                "generated": generated,
+                "failed": failed,
+                "pruned": pruned,
+                "cacheBytes": cache.cacheSizeBytes(),
+                "cacheDir": cacheDir.path,
+                "elapsedMs": elapsed * 1000,
+            ], to: environment)
+        } else {
+            environment.output.out(String(scan.wallpapers.count) + " wallpapers, "
+                                   + String(generated) + " thumbnails generated"
+                                   + (failed > 0 ? ", " + String(failed) + " failed" : "")
+                                   + (pruned > 0 ? ", " + String(pruned) + " pruned" : ""))
+            environment.output.out("cache: " + String(cache.cacheSizeBytes())
+                                   + " bytes in " + cacheDir.path)
+        }
+        return failed == 0 ? CLIExit.success.rawValue : CLIExit.failure.rawValue
     }
 
     // MARK: - config
