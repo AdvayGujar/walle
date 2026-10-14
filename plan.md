@@ -32,7 +32,7 @@ Each module ends with a verification step and a stop for your approval.
 
 | # | Module | Verification | Status |
 | --- | --- | --- | --- |
-| M1 | Scaffold, Paths, Config, Queue, Layout | `swift test` on config/queue/layout units | code green, tests pending |
+| M1 | Scaffold, Paths, Config, Queue, Layout | `swift test` on config/queue/layout units | **done** — 34 tests, 3 suites green |
 | M2 | Library scan + thumbnail cache | `walle list`, `walle cache` against a real wallpaper dir | not started |
 | M3 | History/state + setter + CLI | `walle dir add/list`, `walle set` changes the desktop | not started |
 | M4 | Picker window + static tile corridor | `walle pick` shows parallelograms, no input yet | not started |

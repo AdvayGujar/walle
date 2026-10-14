@@ -261,9 +261,9 @@ public struct Config: Sendable, Equatable {
         var c = self
         var warnings: [String] = []
         func clamp(_ name: String, _ value: inout Double, _ low: Double, _ high: Double) {
-            if value < low || value > high {
+            if value.isNaN || value < low || value > high {
                 warnings.append("\(name) = \(value) out of range \(low)...\(high), clamped")
-                value = min(max(value, low), high)
+                value = value.isNaN ? low : min(max(value, low), high)
             }
         }
         if c.slots < 1 { warnings.append("slots must be >= 1, using 1"); c.slots = 1 }
