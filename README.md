@@ -434,6 +434,23 @@ cards scale with the screen, so on a larger display raise it to match:
     walle config set thumb_max_px 2000
     walle cache --rebuild
 
+**You do not have to get this right by hand.** The picker derives the minimum from the actual
+card geometry, your display's backing scale and the widest aspect ratio in your library, and
+uses that when it is larger than the configured value. It says so on stderr:
+
+    walle-picker: thumb_max_px is 512 but these cards need 1837 on this display;
+    using 1837. Run 'walle config set thumb_max_px 1837' and 'walle cache --rebuild' to match.
+
+Do follow that advice. The picker will generate the larger thumbnails on demand and everything
+will look right, but `walle cache` has been building the smaller ones, so the first open of
+each wallpaper pays for a decode the cache was supposed to have paid already.
+
+**A note on the config file.** `install.sh` writes one on first install, and from then on the
+file is authoritative: changing a default in a new version does not reach a config that already
+exists. That is deliberate, so customisations survive upgrades, but it does mean a value
+written by an older build quietly persists after the geometry it was sized for has changed.
+The automatic floor above exists precisely because that happened.
+
 ---
 
 ## Troubleshooting

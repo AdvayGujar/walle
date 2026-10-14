@@ -46,12 +46,37 @@ public final class PickerController: NSObject, NSApplicationDelegate {
         }
 
         let window = PickerWindow.make(screen: screen, config: config)
+
+        // Never use a thumbnail smaller than the cards need. A config written by an older
+        // build can pin a value that was correct for the old card size, and the symptom is
+        // only slightly soft images, which is very hard to attribute.
+        let widestAspect = library.compactMap { $0.aspectRatio }
+            .map { max($0, 1.0 / $0) }
+            .max() ?? 1.8
+        let geometry = LayoutEngine(
+            config: config,
+            screen: ScreenMetrics(width: Double(screen.frame.width),
+                                  height: Double(screen.frame.height)),
+            transition: 0)
+        let required = geometry.minimumThumbnailPixels(
+            backingScale: Double(screen.backingScaleFactor),
+            widestAspect: widestAspect)
+        let thumbPixels = max(config.thumbMaxPx, required)
+        if thumbPixels > config.thumbMaxPx {
+            FileHandle.standardError.write(Data(
+                ("walle-picker: thumb_max_px is " + String(config.thumbMaxPx)
+                 + " but these cards need " + String(required)
+                 + " on this display; using " + String(thumbPixels)
+                 + ". Run 'walle config set thumb_max_px " + String(required)
+                 + "' and 'walle cache --rebuild' to match.\n").utf8))
+        }
+
         let provider = ThumbnailProvider(
             cache: ThumbnailCache(directory: paths.thumbnailsDir,
-                                  rowMaxPx: config.thumbMaxPx,
-                                  previewMaxPx: config.previewMaxPx),
-            rowMaxPx: config.thumbMaxPx,
-            previewMaxPx: config.previewMaxPx)
+                                  rowMaxPx: thumbPixels,
+                                  previewMaxPx: max(config.previewMaxPx, thumbPixels)),
+            rowMaxPx: thumbPixels,
+            previewMaxPx: max(config.previewMaxPx, thumbPixels))
 
         let contentFrame = CGRect(origin: .zero, size: screen.frame.size)
         let view = CorridorView(frame: contentFrame, config: config, provider: provider,

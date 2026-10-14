@@ -73,6 +73,29 @@ public struct LayoutEngine: Sendable {
 
     static func lerp(_ a: Double, _ b: Double, _ t: Double) -> Double { a + (b - a) * t }
 
+    /// Smallest thumbnail that can fill the largest card on this screen at the given
+    /// backing scale, for the widest aspect ratio in the library.
+    ///
+    /// The cards are taller than they are wide and landscape wallpapers are aspect-filled
+    /// into them, so the image WIDTH is what gets stretched. Sizing this by eye is easy to
+    /// get wrong and the symptom is only slightly soft images, so the picker derives a floor
+    /// from the geometry rather than trusting a number in the config.
+    public func minimumThumbnailPixels(backingScale: Double, widestAspect: Double) -> Int {
+        let s = scale
+        let collapsedBoxWidth = LayoutEngine.boundingWidth(
+            midWidth: config.cardWidth * s,
+            height: config.selectedCardHeight * s,
+            skew: config.cardSkew)
+        let collapsedBoxHeight = config.selectedCardHeight * s
+        let expandedBoxWidth = config.expandedCardWidth * s
+        let expandedBoxHeight = config.expandedCardHeight * s
+
+        let boxWidth = max(collapsedBoxWidth, expandedBoxWidth)
+        let boxHeight = max(collapsedBoxHeight, expandedBoxHeight)
+        let aspect = max(1.0, widestAspect)
+        return Int((max(boxWidth, boxHeight * aspect) * max(1, backingScale)).rounded(.up))
+    }
+
     /// Interpolates between two card states so a card can slide from one slot to the next.
     /// The bounding box is recomputed from the interpolated mid-width, height and skew
     /// rather than interpolated on its own, so the shape stays self-consistent throughout.

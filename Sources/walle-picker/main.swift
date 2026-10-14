@@ -68,13 +68,25 @@ for warning in configWarnings + configSanitizeWarnings {
 
 let setter = NSWorkspaceSetter()
 
-func makeProvider() -> ThumbnailProvider {
-    ThumbnailProvider(
+/// The picker floors the thumbnail size at what the card geometry actually needs, because a
+/// config written by an older build can pin a value that was correct for a smaller card. The
+/// snapshot path has to use the same floor, or it renders blurrier than the real thing and
+/// stops being a useful check.
+func makeProvider(library: [Wallpaper], width: Double, height: Double) -> ThumbnailProvider {
+    let widest = library.compactMap { $0.aspectRatio }
+        .map { max($0, 1.0 / $0) }
+        .max() ?? 1.8
+    let geometry = LayoutEngine(config: config,
+                                screen: ScreenMetrics(width: width, height: height),
+                                transition: 0)
+    let required = geometry.minimumThumbnailPixels(backingScale: 2, widestAspect: widest)
+    let pixels = max(config.thumbMaxPx, required)
+    return ThumbnailProvider(
         cache: ThumbnailCache(directory: paths.thumbnailsDir,
-                              rowMaxPx: config.thumbMaxPx,
-                              previewMaxPx: config.previewMaxPx),
-        rowMaxPx: config.thumbMaxPx,
-        previewMaxPx: config.previewMaxPx)
+                              rowMaxPx: pixels,
+                              previewMaxPx: max(config.previewMaxPx, pixels)),
+        rowMaxPx: pixels,
+        previewMaxPx: max(config.previewMaxPx, pixels))
 }
 
 func loadLibrary() -> [Wallpaper] {
@@ -169,7 +181,8 @@ case "--snapshot":
     let current = setter.currentWallpaperURL()?.path
     let view = CorridorView(frame: CGRect(x: 0, y: 0, width: width, height: height),
                             config: config,
-                            provider: makeProvider(),
+                            provider: makeProvider(library: library,
+                                                   width: width, height: height),
                             currentPath: current,
                             transition: transition,
                             debugColours: debugColours)
