@@ -276,6 +276,23 @@ case "--dump-geometry":
     exit(0)
 
 case "--pick":
+    // One picker at a time. A second press asks the running one to close instead of stacking
+    // another overlay, which is what a duplicate skhd binding would otherwise cause.
+    guard SingleInstance.acquire(at: paths.lockFile) != nil else {
+        if !SingleInstance.askHolderToDismiss(at: paths.lockFile) {
+            writeError("another picker is already open")
+            exit(3)
+        }
+        exit(0)
+    }
+
+    // SIGUSR1 means "dismiss". A dispatch source is used rather than signal() because the
+    // handler has to run Swift code, which is not safe from a real signal handler.
+    signal(SIGUSR1, SIG_IGN)
+    let dismissSource = DispatchSource.makeSignalSource(signal: SIGUSR1, queue: .main)
+    dismissSource.setEventHandler { exit(2) }
+    dismissSource.resume()
+
     let library = loadLibrary()
     guard !library.isEmpty else {
         writeError("no wallpapers found in " + config.wallpaperDirs.joined(separator: ", "))
