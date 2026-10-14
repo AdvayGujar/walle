@@ -441,9 +441,10 @@ uses that when it is larger than the configured value. It says so on stderr:
     walle-picker: thumb_max_px is 512 but these cards need 1837 on this display;
     using 1837. Run 'walle config set thumb_max_px 1837' and 'walle cache --rebuild' to match.
 
-Do follow that advice. The picker will generate the larger thumbnails on demand and everything
-will look right, but `walle cache` has been building the smaller ones, so the first open of
-each wallpaper pays for a decode the cache was supposed to have paid already.
+**You do not need to act on it.** `walle cache` asks the picker for this value before it
+builds anything, so the two always agree and nobody has to keep `thumb_max_px` in step with
+their display. Setting it is only useful as a manual floor if you want more resolution than the
+geometry requires.
 
 **A note on the config file.** `install.sh` writes one on first install, and from then on the
 file is authoritative: changing a default in a new version does not reach a config that already

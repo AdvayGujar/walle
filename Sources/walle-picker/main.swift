@@ -226,6 +226,34 @@ case "--selftest":
     }
     exit(0)
 
+case "--thumb-size":
+    // What size thumbnail the picker will actually request for this display and library.
+    // The walle CLI asks for this so the cache it builds matches, instead of the user
+    // having to keep thumb_max_px in step with their screen by hand.
+    let screen = NSScreen.main ?? NSScreen.screens.first
+    let screenWidth = value(of: "--width", in: rest).flatMap(Double.init)
+        ?? Double(screen?.frame.width ?? 1512)
+    let screenHeight = value(of: "--height", in: rest).flatMap(Double.init)
+        ?? Double(screen?.frame.height ?? 982)
+    let backingScale = Double(screen?.backingScaleFactor ?? 2)
+    let library = loadLibrary()
+    let widest = library.compactMap { $0.aspectRatio }
+        .map { max($0, 1.0 / $0) }
+        .max() ?? 1.8
+    let geometry = LayoutEngine(config: config,
+                                screen: ScreenMetrics(width: screenWidth, height: screenHeight),
+                                transition: 0)
+    let required = geometry.minimumThumbnailPixels(backingScale: backingScale,
+                                                   widestAspect: widest)
+    let pixels = max(config.thumbMaxPx, required)
+    if wantsJSON(rest) {
+        emit(["thumbPixels": pixels, "required": required,
+              "configured": config.thumbMaxPx, "widestAspect": widest])
+    } else {
+        print(String(pixels))
+    }
+    exit(0)
+
 case "--dump-geometry":
     let library = loadLibrary()
     let width = value(of: "--width", in: rest).flatMap(Double.init) ?? 1512

@@ -587,6 +587,27 @@ public struct CLI {
         return process.terminationStatus
     }
 
+    /// Runs the picker and returns its standard output. Used to ask the picker for values
+    /// only it can compute, such as the thumbnail size this display needs.
+    static func capturePicker(_ arguments: [String],
+                              _ environment: CLIEnvironment) -> String? {
+        guard let picker = PickerLocator.locate(environment: environment.environment) else {
+            return nil
+        }
+        let process = Process()
+        process.executableURL = picker
+        process.arguments = arguments
+        let outPipe = Pipe()
+        process.standardOutput = outPipe
+        process.standardError = FileHandle.nullDevice
+        do { try process.run() } catch { return nil }
+        let data = outPipe.fileHandleForReading.readDataToEndOfFile()
+        process.waitUntilExit()
+        guard process.terminationStatus == 0 else { return nil }
+        return String(data: data, encoding: .utf8)?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
     static func selectionMode(_ options: ParsedOptions) throws -> SelectionMode {
         var modes: [SelectionMode] = []
         if let path = options.positionals.first { modes.append(.explicit(path)) }
@@ -830,9 +851,19 @@ public struct CLI {
         if options.has("rebuild") {
             try? FileManager.default.removeItem(at: cacheDir)
         }
+
+        // Ask the picker what size it will really request for this display and library. The
+        // picker derives a floor from the card geometry, so without asking it the cache would
+        // build a different size, the keys would not match, and the picker would regenerate
+        // everything on first open. That is why keeping thumb_max_px in step by hand was
+        // ever necessary, and this is what makes it unnecessary.
+        var thumbPixels = config.thumbMaxPx
+        if let answer = capturePicker(["--thumb-size"], environment), let parsed = Int(answer) {
+            thumbPixels = parsed
+        }
         let cache = ThumbnailCache(directory: cacheDir,
-                                   rowMaxPx: config.thumbMaxPx,
-                                   previewMaxPx: config.previewMaxPx)
+                                   rowMaxPx: thumbPixels,
+                                   previewMaxPx: max(config.previewMaxPx, thumbPixels))
 
         let started = Date()
         var generated = 0
@@ -840,7 +871,9 @@ public struct CLI {
         var failures: [String] = []
 
         for wallpaper in scan.wallpapers {
-            for sizeClass in [ThumbSizeClass.row, ThumbSizeClass.preview] {
+            // One size class: the picker uses the same thumbnail for every card, so
+            // building a second set would only waste disk and time.
+            for sizeClass in [ThumbSizeClass.row] {
                 if cache.existingThumbnail(for: wallpaper, sizeClass: sizeClass) != nil {
                     continue
                 }
