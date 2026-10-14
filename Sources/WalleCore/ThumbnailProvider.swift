@@ -71,11 +71,20 @@ public final class ThumbnailProvider: @unchecked Sendable {
         self.rowMaxPx = rowMaxPx
         self.previewMaxPx = previewMaxPx
 
-        // Bound the decoded-image cache by approximate bytes. One preview costs at most
-        // previewMaxPx * previewMaxPx * 4 bytes, so cap the cache at a handful of them.
-        let previewCost = max(1, previewMaxPx) * max(1, previewMaxPx) * 4
-        memoryCache.totalCostLimit = max(1, previewCost * 8)
-        memoryCache.countLimit = 512
+        // Bound the decoded-image cache by real bytes, sized to what the picker actually
+        // holds at once: the centred card, the two cards that can slide into the centre,
+        // and the small thumbnails for the whole row.
+        //
+        // The previous bound used previewMaxPx squared times four bytes, which is a square
+        // upper bound for a 16:9 image and roughly double the truth, and then multiplied it
+        // by eight. That permitted something like 80 MB of decoded images, which was the
+        // single largest contributor to the picker's memory use.
+        let nineSixteenths = 9.0 / 16.0
+        let typicalPreview = Double(max(1, previewMaxPx) * max(1, previewMaxPx))
+            * 4 * nineSixteenths
+        let typicalRow = Double(max(1, rowMaxPx) * max(1, rowMaxPx)) * 4 * nineSixteenths
+        memoryCache.totalCostLimit = Int(typicalPreview * 3 + typicalRow * 12)
+        memoryCache.countLimit = 64
         memoryCache.delegate = counter
     }
 

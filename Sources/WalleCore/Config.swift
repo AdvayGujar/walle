@@ -55,7 +55,6 @@ public struct Config: Sendable, Equatable {
     public var expandedNeighbourAlpha: Double
     public var animationMs: Double
     public var expandOnEnter: Bool
-    public var hoverPromotes: Bool
 
     public var applyTo: ApplyTarget
     public var fillMode: FillMode
@@ -87,7 +86,6 @@ public struct Config: Sendable, Equatable {
         expandedNeighbourAlpha: Double = 0.06,
         animationMs: Double = 350,
         expandOnEnter: Bool = true,
-        hoverPromotes: Bool = true,
         applyTo: ApplyTarget = .all,
         fillMode: FillMode = .fill,
         thumbMaxPx: Int = 512,
@@ -117,7 +115,6 @@ public struct Config: Sendable, Equatable {
         self.expandedNeighbourAlpha = expandedNeighbourAlpha
         self.animationMs = animationMs
         self.expandOnEnter = expandOnEnter
-        self.hoverPromotes = hoverPromotes
         self.applyTo = applyTo
         self.fillMode = fillMode
         self.thumbMaxPx = thumbMaxPx
@@ -134,7 +131,7 @@ public struct Config: Sendable, Equatable {
         "card_skew", "card_corner_radius", "card_border_width", "card_border_color",
         "row_center_y_frac", "dim_falloff", "dim_floor", "dim_alpha",
         "expanded_neighbour_alpha",
-        "animation_ms", "expand_on_enter", "hover_promotes",
+        "animation_ms", "expand_on_enter",
         "apply_to", "fill_mode", "thumb_max_px", "preview_max_px",
         "type_to_filter", "log_level",
     ]
@@ -186,7 +183,6 @@ public struct Config: Sendable, Equatable {
             expandedNeighbourAlpha = parseDouble(value) ?? expandedNeighbourAlpha
         case "animation_ms": animationMs = parseDouble(value) ?? animationMs
         case "expand_on_enter": expandOnEnter = parseBool(value) ?? expandOnEnter
-        case "hover_promotes": hoverPromotes = parseBool(value) ?? hoverPromotes
         case "apply_to": applyTo = ApplyTarget.parse(value) ?? applyTo
         case "fill_mode": fillMode = FillMode.parse(value) ?? fillMode
         case "thumb_max_px": thumbMaxPx = parseInt(value) ?? thumbMaxPx
@@ -222,7 +218,6 @@ public struct Config: Sendable, Equatable {
         case "expanded_neighbour_alpha": return num(expandedNeighbourAlpha)
         case "animation_ms": return num(animationMs)
         case "expand_on_enter": return boolString(expandOnEnter)
-        case "hover_promotes": return boolString(hoverPromotes)
         case "apply_to": return applyTo.rawValue
         case "fill_mode": return fillMode.rawValue
         case "thumb_max_px": return String(thumbMaxPx)

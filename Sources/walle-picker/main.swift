@@ -8,6 +8,7 @@ import WalleKit
 // the current wallpaper it execs this binary.
 
 let arguments = Array(CommandLine.arguments.dropFirst())
+let launchedAt = Date()
 
 func writeError(_ message: String) {
     FileHandle.standardError.write(Data(("walle-picker: " + message + "\n").utf8))
@@ -247,7 +248,9 @@ case "--pick":
                   library: library,
                   focusIndex: focusIndex(in: library, currentPath: current),
                   currentPath: current,
-                  startsExpanded: !config.expandOnEnter)
+                  startsExpanded: !config.expandOnEnter,
+                  runForMs: value(of: "--run-for", in: rest).flatMap(Int.init) ?? 0,
+                  launchedAt: launchedAt)
 
 default:
     print(usageText)

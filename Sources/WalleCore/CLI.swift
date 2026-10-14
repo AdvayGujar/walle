@@ -158,8 +158,9 @@ public struct CLI {
     }
 
     static func dispatch(_ arguments: [String], environment: CLIEnvironment) throws -> Int32 {
+        // Bare "walle" opens the picker. Everything else is walle <verb>.
         var tokens = arguments
-        if tokens.isEmpty { tokens = ["help"] }
+        if tokens.isEmpty { tokens = ["pick"] }
 
         // A leading global option is only --help / --version; everything else is a command.
         if let first = tokens.first, first == "--help" || first == "-h" { tokens = ["help"] }
@@ -172,6 +173,15 @@ public struct CLI {
         case "help": return help(environment)
         case "version": environment.output.out("walle \(version)"); return CLIExit.success.rawValue
         case "list": return try list(rest, environment: environment)
+        // Convenience verbs so common actions read as walle <verb> rather than needing a
+        // second word: walle next, walle add ~/Pictures/Walls, and so on.
+        case "next": return try set(["--next"] + rest, environment: environment)
+        case "prev", "previous": return try set(["--prev"] + rest, environment: environment)
+        case "random": return try set(["--random"] + rest, environment: environment)
+        case "add": return try dir(["add"] + rest, environment: environment)
+        case "remove", "rm": return try dir(["remove"] + rest, environment: environment)
+        case "use": return try dir(["use"] + rest, environment: environment)
+        case "dirs": return try dir(["list"] + rest, environment: environment)
         case "dir": return try dir(rest, environment: environment)
         case "config": return try config(rest, environment: environment)
         case "set": return try set(rest, environment: environment)
@@ -222,6 +232,12 @@ public struct CLI {
           walle <command> [options]
 
         COMMANDS
+          pick                       Open the picker (this is what a bare "walle" runs)
+          next, prev, random         Apply the next, previous or a random wallpaper
+          add <path>                 Add a wallpaper directory      (short for dir add)
+          remove <path>              Remove a wallpaper directory   (short for dir remove)
+          use <path>                 Replace the directory list     (short for dir use)
+          dirs                       Show wallpaper directories     (short for dir list)
           list                       List wallpapers in the configured directories
           set <path>                 Apply a wallpaper
           set --random|--next|--prev|--last

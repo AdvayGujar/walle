@@ -15,19 +15,24 @@ public final class PickerController: NSObject, NSApplicationDelegate {
     private let focusIndex: Int
     private let currentPath: String?
     private let startsExpanded: Bool
+    private let runForMs: Int
+    private let launchedAt: Date
 
     private var window: PickerWindow?
     private var corridor: CorridorView?
     private var keyMonitor: Any?
 
     public init(config: Config, paths: WallePaths, library: [Wallpaper],
-                focusIndex: Int, currentPath: String?, startsExpanded: Bool) {
+                focusIndex: Int, currentPath: String?, startsExpanded: Bool,
+                runForMs: Int = 0, launchedAt: Date = Date()) {
         self.config = config
         self.paths = paths
         self.library = library
         self.focusIndex = focusIndex
         self.currentPath = currentPath
         self.startsExpanded = startsExpanded
+        self.runForMs = runForMs
+        self.launchedAt = launchedAt
         super.init()
     }
 
@@ -92,6 +97,20 @@ public final class PickerController: NSObject, NSApplicationDelegate {
         self.window = window
         self.corridor = view
 
+        // WALLE_TRACE reports how long the process took to get a window on screen, which is
+        // the cold-start number the performance budget is stated in.
+        if ProcessInfo.processInfo.environment["WALLE_TRACE"] != nil {
+            let elapsed = Date().timeIntervalSince(launchedAt) * 1000
+            FileHandle.standardError.write(Data(
+                ("walle-picker: window up after " + String(format: "%.1f", elapsed) + "ms\n").utf8))
+        }
+
+        // --run-for exists so cold start and peak memory can be measured without a human.
+        if runForMs > 0 {
+            let delay = Double(runForMs) / 1000.0
+            Timer.scheduledTimer(withTimeInterval: delay, repeats: false) { _ in exit(0) }
+        }
+
         // Keyboard only. Handling keys here rather than on the view means they work no
         // matter which view happens to be first responder. Returning nil consumes the event.
         keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [view] event in
@@ -131,11 +150,13 @@ public enum PickerApp {
     @MainActor
     public static func run(config: Config, paths: WallePaths, library: [Wallpaper],
                            focusIndex: Int, currentPath: String?,
-                           startsExpanded: Bool) -> Never {
+                           startsExpanded: Bool, runForMs: Int = 0,
+                           launchedAt: Date = Date()) -> Never {
         let application = NSApplication.shared
         let controller = PickerController(config: config, paths: paths, library: library,
                                           focusIndex: focusIndex, currentPath: currentPath,
-                                          startsExpanded: startsExpanded)
+                                          startsExpanded: startsExpanded,
+                                          runForMs: runForMs, launchedAt: launchedAt)
         application.delegate = controller
         application.run()
         exit(0)

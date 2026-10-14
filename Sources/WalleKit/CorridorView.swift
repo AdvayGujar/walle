@@ -91,7 +91,14 @@ public final class CorridorView: NSView {
         self.library = library
         self.focus = library.isEmpty ? 0 : Queue.wrapIndex(focus, count: library.count)
         cancelAnimation()
-        rebuildCards(reloadContents: true)
+        // Draw the card shapes immediately and decode their images on the next run loop
+        // pass. Waiting for five JPEG decodes before the window appears was a large part of
+        // the cold-start time, and an empty card for one frame costs nothing.
+        rebuildCards(reloadContents: false)
+        preloadPreviews()
+        Timer.scheduledTimer(withTimeInterval: 0, repeats: false) { [weak self] _ in
+            self?.rebuildCards(reloadContents: true)
+        }
     }
 
     // MARK: - animation clock
@@ -201,6 +208,7 @@ public final class CorridorView: NSView {
         rotationContents = contents
         fromTransition = transition
         toTransition = transition
+        preloadPreviews()
 
         if config.animationMs > 0 {
             startAnimation(durationMs: min(config.animationMs, 260))
@@ -272,6 +280,23 @@ public final class CorridorView: NSView {
         return context.makeImage()
     }
 
+    /// Warms the preview-sized thumbnails for the centred card and the two beside it.
+    /// The centre claims the preview image the instant the morph starts, and its neighbours
+    /// are the cards that can slide into the centre, so the decode happens ahead of the
+    /// frame that needs it instead of stalling that frame.
+    private func preloadPreviews() {
+        guard !library.isEmpty else { return }
+        let centre = Queue.wrapIndex(focus, count: library.count)
+        var wanted: [Int] = [centre]
+        if library.count > 1 {
+            wanted.append(Queue.wrapIndex(centre - 1, count: library.count))
+            wanted.append(Queue.wrapIndex(centre + 1, count: library.count))
+        }
+        var seen = Set<Int>()
+        let unique = wanted.filter { seen.insert($0).inserted }.map { library[$0] }
+        provider.preload(unique, sizeClass: .preview)
+    }
+
     private func rebuildCards(reloadContents: Bool) {
         let engine = LayoutEngine(config: config, screen: screenMetrics, transition: transition)
         let slots = engine.slots(count: library.count, focus: focus)
@@ -297,7 +322,11 @@ public final class CorridorView: NSView {
             // rotation map rather than from whatever slot it currently occupies.
             let wallpaper = morphing ? (rotationContents[index] ?? library[slot.index])
                                      : library[slot.index]
-            let wanted: ThumbSizeClass = slot.isCenter ? .preview : .row
+            // While the row is resting the centre card is no wider than the others, so the
+            // small thumbnail is plenty. Only once the morph starts does it need the
+            // preview-sized image. That avoids decoding a 1600px JPEG on every rotation,
+            // which was happening on the main thread and stalling the frame.
+            let wanted: ThumbSizeClass = (slot.isCenter && transition > 0) ? .preview : .row
 
             if reloadContents || card.wallpaper?.path != wallpaper.path
                 || card.sizeClass != wanted {
