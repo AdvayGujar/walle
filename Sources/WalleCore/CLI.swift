@@ -766,16 +766,27 @@ public struct CLI {
         // log is a reliable proxy and far more useful than a shrug.
         let skhdErrLog = "/tmp/skhd_" + environment.paths.home.lastPathComponent + ".err.log"
         if let data = fm.contents(atPath: skhdErrLog),
-           let text = String(data: data, encoding: .utf8),
-           text.lowercased().contains("accessibility") {
-            checks.append(("skhd accessibility", false,
-                           "skhd is aborting for lack of Accessibility access (see "
-                           + skhdErrLog + "); grant it in System Settings > Privacy & Security "
-                           + "> Accessibility, then restart skhd"))
+           let text = String(data: data, encoding: .utf8) {
+            // Only the most recent line counts. The log is append-only and never rotated, so a
+            // complaint from before the permission was granted would otherwise fail this check
+            // forever — which is exactly what happened the first time. A skhd that is actually
+            // broken is crash-looping, and writes the complaint on every restart, so it is
+            // always the last thing in the file when it is genuinely broken.
+            let lastLine = text.split(separator: "\n")
+                .last { !$0.trimmingCharacters(in: .whitespaces).isEmpty }
+                .map(String.init) ?? ""
+            if lastLine.lowercased().contains("accessibility") {
+                checks.append(("skhd accessibility", false,
+                               "skhd is aborting for lack of Accessibility access (see "
+                               + skhdErrLog + "); grant it in System Settings > Privacy & "
+                               + "Security > Accessibility, then restart skhd"))
+            } else {
+                checks.append(("skhd accessibility", true,
+                               "skhd is not complaining; its last log line is unrelated"))
+            }
         } else {
             checks.append(("skhd accessibility", true,
-                           "no accessibility complaint in " + skhdErrLog
-                           + " (grant it in System Settings if the hotkey does nothing)"))
+                           "no skhd log yet (grant it in System Settings if the hotkey does nothing)"))
         }
 
         let failures = checks.filter { !$0.ok }.count
