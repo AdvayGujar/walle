@@ -50,6 +50,9 @@ public struct Config: Sendable, Equatable {
     public var dimFalloff: Double
     public var dimFloor: Double
     public var dimAlpha: Double
+    /// Alpha for every non-focused card while the preview is expanded. Kept very low so
+    /// the expanded card is the only thing competing for attention.
+    public var expandedNeighbourAlpha: Double
     public var animationMs: Double
     public var expandOnEnter: Bool
     public var hoverPromotes: Bool
@@ -81,6 +84,7 @@ public struct Config: Sendable, Equatable {
         dimFalloff: Double = 0.18,
         dimFloor: Double = 0.35,
         dimAlpha: Double = 0.35,
+        expandedNeighbourAlpha: Double = 0.06,
         animationMs: Double = 350,
         expandOnEnter: Bool = true,
         hoverPromotes: Bool = true,
@@ -110,6 +114,7 @@ public struct Config: Sendable, Equatable {
         self.dimFalloff = dimFalloff
         self.dimFloor = dimFloor
         self.dimAlpha = dimAlpha
+        self.expandedNeighbourAlpha = expandedNeighbourAlpha
         self.animationMs = animationMs
         self.expandOnEnter = expandOnEnter
         self.hoverPromotes = hoverPromotes
@@ -128,6 +133,7 @@ public struct Config: Sendable, Equatable {
         "expanded_card_width", "expanded_card_height",
         "card_skew", "card_corner_radius", "card_border_width", "card_border_color",
         "row_center_y_frac", "dim_falloff", "dim_floor", "dim_alpha",
+        "expanded_neighbour_alpha",
         "animation_ms", "expand_on_enter", "hover_promotes",
         "apply_to", "fill_mode", "thumb_max_px", "preview_max_px",
         "type_to_filter", "log_level",
@@ -176,6 +182,8 @@ public struct Config: Sendable, Equatable {
         case "dim_falloff": dimFalloff = parseDouble(value) ?? dimFalloff
         case "dim_floor": dimFloor = parseDouble(value) ?? dimFloor
         case "dim_alpha": dimAlpha = parseDouble(value) ?? dimAlpha
+        case "expanded_neighbour_alpha":
+            expandedNeighbourAlpha = parseDouble(value) ?? expandedNeighbourAlpha
         case "animation_ms": animationMs = parseDouble(value) ?? animationMs
         case "expand_on_enter": expandOnEnter = parseBool(value) ?? expandOnEnter
         case "hover_promotes": hoverPromotes = parseBool(value) ?? hoverPromotes
@@ -211,6 +219,7 @@ public struct Config: Sendable, Equatable {
         case "dim_falloff": return num(dimFalloff)
         case "dim_floor": return num(dimFloor)
         case "dim_alpha": return num(dimAlpha)
+        case "expanded_neighbour_alpha": return num(expandedNeighbourAlpha)
         case "animation_ms": return num(animationMs)
         case "expand_on_enter": return boolString(expandOnEnter)
         case "hover_promotes": return boolString(hoverPromotes)
@@ -275,6 +284,7 @@ public struct Config: Sendable, Equatable {
         clamp("dim_falloff", &c.dimFalloff, 0, 1)
         clamp("dim_floor", &c.dimFloor, 0, 1)
         clamp("dim_alpha", &c.dimAlpha, 0, 1)
+        clamp("expanded_neighbour_alpha", &c.expandedNeighbourAlpha, 0, 1)
         clamp("animation_ms", &c.animationMs, 0, 5000)
         if c.thumbMaxPx < 16 { warnings.append("thumb_max_px too small, using 16"); c.thumbMaxPx = 16 }
         if c.previewMaxPx < 16 { warnings.append("preview_max_px too small, using 16"); c.previewMaxPx = 16 }

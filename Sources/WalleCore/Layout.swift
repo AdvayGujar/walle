@@ -114,8 +114,12 @@ public struct LayoutEngine: Sendable {
             result.append(SlotGeometry(
                 slot: slot, offset: d, index: libraryIndex, rect: rect,
                 width: width, height: height, skew: skew,
+                // Expanded: everything except the focused card fades almost away so the
+                // preview is the only thing being looked at. Collapsed: a gentle falloff.
                 alpha: isCentre ? 1
-                    : max(config.dimFloor, 1 - config.dimFalloff * Double(distance)),
+                    : (expanded
+                        ? config.expandedNeighbourAlpha
+                        : max(config.dimFloor, 1 - config.dimFalloff * Double(distance))),
                 zPosition: isCentre ? 1000 : 500 - Double(distance),
                 isCenter: isCentre,
                 cornerRadius: config.cardCornerRadius * s,
