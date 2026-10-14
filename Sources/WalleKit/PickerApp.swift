@@ -50,7 +50,8 @@ public final class PickerController: NSObject, NSApplicationDelegate {
 
         let contentFrame = CGRect(origin: .zero, size: screen.frame.size)
         let view = CorridorView(frame: contentFrame, config: config, provider: provider,
-                                currentPath: currentPath, expanded: startsExpanded)
+                                currentPath: currentPath,
+                                transition: startsExpanded ? 1 : 0)
         view.reload(library: library, focus: focusIndex)
         window.contentView = view
 

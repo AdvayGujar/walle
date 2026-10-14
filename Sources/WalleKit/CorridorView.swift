@@ -1,6 +1,7 @@
 import AppKit
 import CoreGraphics
 import ImageIO
+import QuartzCore
 import WalleCore
 
 public enum SnapshotError: Error, CustomStringConvertible {
@@ -19,8 +20,10 @@ public enum SnapshotError: Error, CustomStringConvertible {
 
 /// The card row.
 ///
-/// All geometry comes from LayoutEngine, so this class only owns the layer pool, the
-/// thumbnail requests and the paint order.
+/// All geometry comes from LayoutEngine as a function of a single transition value, so
+/// this class only owns the layer pool, the thumbnails, the paint order and the clock that
+/// advances the transition. Because the animation is just that one number, a snapshot at
+/// any point of the transition shows exactly what the animation will render.
 public final class CorridorView: NSView {
 
     private var config: Config
@@ -30,24 +33,26 @@ public final class CorridorView: NSView {
 
     private var library: [Wallpaper] = []
     private var focus: Int = 0
-    private var expanded: Bool = true
+    private var transition: Double = 1
 
     private var cards: [CardLayer] = []
     private let backdrop = CALayer()
-
-    /// Diagnostic mode: fills each card with a distinct flat colour so the compositing
-    /// order in an overlap can be read straight off a rendered snapshot.
     private let debugColours: Bool
 
+    private var animationTimer: Timer?
+    private var animationStart: CFTimeInterval = 0
+    private var animationFrom: Double = 0
+    private var animationTo: Double = 1
+
     public init(frame: NSRect, config: Config, provider: ThumbnailProvider,
-                currentPath: String?, expanded: Bool = true,
+                currentPath: String?, transition: Double = 1,
                 debugColours: Bool = false) {
         self.config = config
         self.screenMetrics = ScreenMetrics(width: Double(frame.width),
                                            height: Double(frame.height))
         self.provider = provider
         self.currentPath = currentPath
-        self.expanded = expanded
+        self.transition = min(1, max(0, transition))
         self.debugColours = debugColours
         super.init(frame: frame)
         wantsLayer = true
@@ -60,6 +65,9 @@ public final class CorridorView: NSView {
     required init?(coder: NSCoder) { fatalError("CorridorView is created in code only") }
 
     public override var isFlipped: Bool { false }
+    public override var acceptsFirstResponder: Bool { true }
+
+    public var currentTransition: Double { transition }
 
     public func reload(library: [Wallpaper], focus: Int) {
         self.library = library
@@ -67,11 +75,64 @@ public final class CorridorView: NSView {
         rebuildCards(reloadContents: true)
     }
 
-    public func setExpanded(_ value: Bool) {
-        guard expanded != value else { return }
-        expanded = value
-        rebuildCards(reloadContents: true)
+    /// Sets the morph position. Animated runs an ease-out over config.animationMs,
+    /// advancing the single transition value the geometry is derived from.
+    public func setTransition(_ target: Double, animated: Bool) {
+        let target = min(1, max(0, target))
+        animationTimer?.invalidate()
+        animationTimer = nil
+
+        guard animated, config.animationMs > 0, abs(target - transition) > 0.0001 else {
+            transition = target
+            rebuildCards(reloadContents: false)
+            return
+        }
+
+        animationFrom = transition
+        animationTo = target
+        animationStart = CACurrentMediaTime()
+        let timer = Timer(timeInterval: 1.0 / 60.0, repeats: true) { [weak self] timer in
+            guard let self else { timer.invalidate(); return }
+            let elapsedMs = (CACurrentMediaTime() - self.animationStart) * 1000
+            let progress = min(1, elapsedMs / self.config.animationMs)
+            // ease-out cubic
+            let eased = 1 - pow(1 - progress, 3)
+            self.transition = self.animationFrom
+                + (self.animationTo - self.animationFrom) * eased
+            self.rebuildCards(reloadContents: false)
+            if progress >= 1 {
+                timer.invalidate()
+                self.animationTimer = nil
+            }
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        animationTimer = timer
     }
+
+    // MARK: - hover (minimal trigger; per-card hover and the anti-spin guards are M5b)
+
+    public override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        for area in trackingAreas { removeTrackingArea(area) }
+        addTrackingArea(NSTrackingArea(
+            rect: bounds,
+            options: [.mouseEnteredAndExited, .mouseMoved, .activeAlways, .inVisibleRect],
+            owner: self, userInfo: nil))
+    }
+
+    public override func mouseEntered(with event: NSEvent) {
+        setTransition(1, animated: true)
+    }
+
+    public override func mouseExited(with event: NSEvent) {
+        setTransition(0, animated: true)
+    }
+
+    public override func mouseMoved(with event: NSEvent) {
+        if transition < 1 { setTransition(1, animated: true) }
+    }
+
+    // MARK: - layout
 
     public override func layout() {
         super.layout()
@@ -112,7 +173,7 @@ public final class CorridorView: NSView {
     }
 
     private func rebuildCards(reloadContents: Bool) {
-        let engine = LayoutEngine(config: config, screen: screenMetrics, expanded: expanded)
+        let engine = LayoutEngine(config: config, screen: screenMetrics, transition: transition)
         let slots = engine.slots(count: library.count, focus: focus)
 
         while cards.count < slots.count {
@@ -127,7 +188,9 @@ public final class CorridorView: NSView {
         for (index, slot) in slots.enumerated() {
             let card = cards[index]
             let wallpaper = library[slot.index]
-            let wanted: ThumbSizeClass = slot.isCenter && expanded ? .preview : .row
+            // The focused card always uses the preview-sized thumbnail: it is the one that
+            // can grow large, and swapping size class mid-morph would flash.
+            let wanted: ThumbSizeClass = slot.isCenter ? .preview : .row
 
             if reloadContents || card.wallpaper?.path != wallpaper.path
                 || card.sizeClass != wanted {
@@ -146,10 +209,8 @@ public final class CorridorView: NSView {
         }
 
         // The on-screen compositor sorts siblings by zPosition, but CALayer.render(in:)
-        // -- which --snapshot uses -- paints them in sublayer order. Relying on zPosition
-        // therefore produced a snapshot where far tiles covered near ones. Re-inserting
-        // the cards back-to-front makes the paint order explicit and identical in both
-        // paths, so what is verified offscreen is what appears on screen.
+        // -- which --snapshot uses -- paints them in sublayer order. Re-inserting the cards
+        // back-to-front makes the paint order explicit and identical in both paths.
         let paintOrder = slots.indices
             .map { index -> (card: CardLayer, depth: Double) in
                 (cards[index], slots[index].zPosition)
@@ -160,8 +221,6 @@ public final class CorridorView: NSView {
         }
     }
 
-    /// Renders the row straight into a PNG. Used by --snapshot so the layout can be
-    /// inspected without a display.
     public func snapshot(to url: URL) throws {
         layoutSubtreeIfNeeded()
         let width = Int(bounds.width.rounded())

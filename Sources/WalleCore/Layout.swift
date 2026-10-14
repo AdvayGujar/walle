@@ -37,25 +37,33 @@ public struct ScreenMetrics: Sendable, Equatable {
 /// Pure geometry for the card row. Design units are multiplied by
 /// scale = screenWidth / designWidth, so the composition scales with the display.
 ///
-/// Collapsed: every card is a skewed slice at a uniform pitch, and the selected card is
-/// taller than the rest. Expanded: the selected card becomes a flat rectangle and the
-/// neighbours sit half tucked behind it, stepped outward by one pitch.
+/// Geometry is a continuous function of the transition value: 0 is the resting row of
+/// skewed slices, 1 is the expanded preview, and every value in between is a valid frame
+/// of the morph. That is what lets the animation be driven by a single number, and what
+/// lets a snapshot at an arbitrary point of the transition be used to verify it.
 public struct LayoutEngine: Sendable {
     public var config: Config
     public var screen: ScreenMetrics
-    public var expanded: Bool
+    /// 0 = resting row, 1 = fully expanded preview.
+    public var transition: Double
 
-    public init(config: Config, screen: ScreenMetrics, expanded: Bool) {
+    public init(config: Config, screen: ScreenMetrics, transition: Double) {
         self.config = config
         self.screen = screen
-        self.expanded = expanded
+        self.transition = transition
     }
+
+    public init(config: Config, screen: ScreenMetrics, expanded: Bool) {
+        self.init(config: config, screen: screen, transition: expanded ? 1 : 0)
+    }
+
+    public var expanded: Bool { transition >= 1 }
 
     public var scale: Double { screen.width / max(1, config.designWidth) }
     public var centerX: Double { screen.width / 2 }
     public var centerY: Double { screen.height * config.rowCenterYFrac }
 
-    /// Centre-to-centre distance between neighbouring cards.
+    /// Centre-to-centre distance between neighbouring cards at rest.
     public var pitch: Double { (config.cardWidth + config.cardGap) * scale }
 
     /// Bounding-box width of a skewed card.
@@ -63,11 +71,14 @@ public struct LayoutEngine: Sendable {
         midWidth + abs(skew) * height
     }
 
+    static func lerp(_ a: Double, _ b: Double, _ t: Double) -> Double { a + (b - a) * t }
+
     public func slots(count: Int, focus: Int) -> [SlotGeometry] {
         let n = Queue.effectiveSlotCount(configured: config.slots, libraryCount: count)
         guard n > 0 else { return [] }
         let centerSlot = n / 2
         let s = scale
+        let t = min(1, max(0, transition))
 
         let stripWidth = config.cardWidth * s
         let stripHeight = config.cardHeight * s
@@ -90,20 +101,26 @@ public struct LayoutEngine: Sendable {
             let height: Double
             let skew: Double
             let offsetX: Double
+            let alpha: Double
 
             if isCentre {
-                width = expanded ? wideWidth : stripWidth
-                height = expanded ? wideHeight : tallHeight
-                skew = expanded ? 0 : config.cardSkew
+                // Width, height and skew all move together: the slice straightens out and
+                // opens up into the flat preview rectangle.
+                width = LayoutEngine.lerp(stripWidth, wideWidth, t)
+                height = LayoutEngine.lerp(tallHeight, wideHeight, t)
+                skew = LayoutEngine.lerp(config.cardSkew, 0, t)
                 offsetX = 0
+                alpha = 1
             } else {
                 width = stripWidth
                 height = stripHeight
                 skew = config.cardSkew
-                // Expanded: the first neighbour is half tucked behind the rectangle, so
-                // its centre sits on the rectangle edge. The rest step by one pitch.
-                let inner = expanded ? wideWidth / 2 : step
-                offsetX = sign * (inner + Double(distance - 1) * step)
+                // Neighbours slide outward to make room as the centre widens.
+                let resting = step * Double(distance)
+                let opened = wideWidth / 2 + Double(distance - 1) * step
+                offsetX = sign * LayoutEngine.lerp(resting, opened, t)
+                let restingAlpha = max(config.dimFloor, 1 - config.dimFalloff * Double(distance))
+                alpha = LayoutEngine.lerp(restingAlpha, config.expandedNeighbourAlpha, t)
             }
 
             let boxWidth = LayoutEngine.boundingWidth(midWidth: width, height: height, skew: skew)
@@ -113,13 +130,7 @@ public struct LayoutEngine: Sendable {
 
             result.append(SlotGeometry(
                 slot: slot, offset: d, index: libraryIndex, rect: rect,
-                width: width, height: height, skew: skew,
-                // Expanded: everything except the focused card fades almost away so the
-                // preview is the only thing being looked at. Collapsed: a gentle falloff.
-                alpha: isCentre ? 1
-                    : (expanded
-                        ? config.expandedNeighbourAlpha
-                        : max(config.dimFloor, 1 - config.dimFalloff * Double(distance))),
+                width: width, height: height, skew: skew, alpha: alpha,
                 zPosition: isCentre ? 1000 : 500 - Double(distance),
                 isCenter: isCentre,
                 cornerRadius: config.cardCornerRadius * s,

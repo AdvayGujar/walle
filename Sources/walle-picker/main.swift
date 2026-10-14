@@ -32,6 +32,15 @@ func value(of flag: String, in tokens: [String]) -> String? {
     return tokens[index + 1]
 }
 
+/// 0 is the resting row, 1 is the expanded preview. --transition takes any point between
+/// them, which is how mid-morph frames are rendered for verification.
+func transitionValue(_ tokens: [String]) -> Double {
+    if let raw = value(of: "--transition", in: tokens), let parsed = Double(raw) {
+        return min(1, max(0, parsed))
+    }
+    return tokens.contains("--collapsed") ? 0 : 1
+}
+
 let usageText = """
 walle-picker - the macOS half of walle
 
@@ -151,7 +160,7 @@ case "--snapshot":
     let url = walleExpand(output, home: paths.home).standardizedFileURL
     let width = value(of: "--width", in: rest).flatMap(Double.init) ?? 1512
     let height = value(of: "--height", in: rest).flatMap(Double.init) ?? 982
-    let collapsed = rest.contains("--collapsed")
+    let transition = transitionValue(rest)
     let debugColours = rest.contains("--debug-tiles")
 
     let library = loadLibrary()
@@ -164,7 +173,7 @@ case "--snapshot":
                             config: config,
                             provider: makeProvider(),
                             currentPath: current,
-                            expanded: !collapsed,
+                            transition: transition,
                             debugColours: debugColours)
     view.reload(library: library, focus: focusIndex(in: library, currentPath: current))
     do {
@@ -210,14 +219,14 @@ case "--dump-geometry":
     let library = loadLibrary()
     let width = value(of: "--width", in: rest).flatMap(Double.init) ?? 1512
     let height = value(of: "--height", in: rest).flatMap(Double.init) ?? 982
-    let expanded = !rest.contains("--collapsed")
+    let transition = transitionValue(rest)
     let current = setter.currentWallpaperURL()?.path
     let engine = LayoutEngine(config: config,
                               screen: ScreenMetrics(width: width, height: height),
-                              expanded: expanded)
+                              transition: transition)
     let slots = engine.slots(count: library.count,
                              focus: focusIndex(in: library, currentPath: current))
-    print("expanded=\(expanded) slots=\(slots.count) screen=\(Int(width))x\(Int(height))")
+    print("transition=\(transition) slots=\(slots.count) screen=\(Int(width))x\(Int(height))")
     for slot in slots {
         print(String(format: "  slot %d  offset %+d  index %d  zPos %7.1f  alpha %.2f  midW %6.1f  h %6.1f  skew %+.2f  box x=%7.1f y=%6.1f w=%6.1f  centreX %7.1f",
                      slot.slot, slot.offset, slot.index, slot.zPosition, slot.alpha,
@@ -234,14 +243,14 @@ case "--pick":
         exit(2)
     }
     let current = setter.currentWallpaperURL()?.path
-    // M4 opens expanded so the centred preview is visible; M5 adds collapse-on-open
-    // and expand-on-pointer-entry using config.expandOnEnter.
+    // Opens resting, then the morph to the preview is driven by pointer entry, which is
+    // the transition the design calls for. Per-card hover and the anti-spin guards are M5b.
     PickerApp.run(config: config,
                   paths: paths,
                   library: library,
                   focusIndex: focusIndex(in: library, currentPath: current),
                   currentPath: current,
-                  startsExpanded: true)
+                  startsExpanded: !config.expandOnEnter)
 
 default:
     print(usageText)
