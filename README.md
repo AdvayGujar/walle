@@ -1,10 +1,35 @@
 # walle
 
-A keyboard-driven wallpaper switcher for macOS. Press a hotkey, a row of slanted cards
-appears over the desktop, pick one, and it becomes your wallpaper permanently.
+**A Linux-style wallpaper picker for macOS.**
 
-No dock icon, no menu bar item, no preferences window, no background service. When the picker
-is closed it uses zero processes. All configuration is on the command line.
+If you have used hyprpaper, swww, swaybg, or one of the Quickshell wallpaper pickers on
+Hyprland, Sway or Niri, this is the macOS equivalent. Press a hotkey and a row of slanted
+wallpaper cards appears over your desktop; move with the arrow keys; press Enter and it becomes
+your wallpaper, permanently.
+
+macOS has nothing like those tools. The built-in route is System Settings, which is a dialog.
+Every third-party wallpaper app is a GUI with a menu bar icon, a preferences pane, and a process
+that stays resident whether you are using it or not. walle is the opposite:
+
+- **Two small binaries** — 392 KB and 523 KB, no dependencies, nothing installed at runtime
+- **No UI besides the picker** — no dock icon, no menu bar item, no preferences window
+- **No background process** — zero processes and zero CPU when the picker is closed
+- **Keyboard first** — configured from the command line, driven from the keyboard
+- **Quick** — ~130 ms from hotkey to window, ~47 MB while open
+
+### Coming from a Linux setup
+
+| On Hyprland / Sway / Niri you would use | Here |
+| --- | --- |
+| `swww img <file>`, `hyprctl hyprpaper wallpaper …` | `walle set <file>` |
+| a rofi / walker / Quickshell picker | `walle`, or a hotkey bound to it |
+| a keybind that steps to the next wallpaper | `walle next` / `walle prev` / `walle random` |
+| `~/.config/hypr/hyprpaper.conf` | `~/.config/walle/config` |
+| `swww-daemon` and friends | nothing — no daemon runs at all |
+
+---
+
+## What it looks like
 
 ---
 
