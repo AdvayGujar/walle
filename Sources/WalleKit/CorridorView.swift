@@ -45,7 +45,6 @@ public final class CorridorView: NSView {
 
     /// Geometry currently on screen, reused for hit testing.
     private var currentSlots: [SlotGeometry] = []
-    private var hoverGate = HoverGate()
 
     // One clock drives everything.
     private var animationTimer: Timer?
@@ -167,7 +166,6 @@ public final class CorridorView: NSView {
         let oldContents: [Wallpaper] = (0..<count).map { library[oldSlots[$0].index] }
 
         focus = Queue.focus(after: delta, from: focus, count: library.count)
-        hoverGate.reset()
 
         let engine = LayoutEngine(config: config, screen: screenMetrics, transition: transition)
         let newSlots = engine.slots(count: library.count, focus: focus)
@@ -215,58 +213,12 @@ public final class CorridorView: NSView {
         onApply?(library[Queue.wrapIndex(focus, count: library.count)])
     }
 
-    // MARK: - hover
+    // MARK: - keyboard
 
-    public override func updateTrackingAreas() {
-        super.updateTrackingAreas()
-        for area in trackingAreas { removeTrackingArea(area) }
-        addTrackingArea(NSTrackingArea(
-            rect: bounds,
-            options: [.mouseEnteredAndExited, .mouseMoved, .activeAlways, .inVisibleRect],
-            owner: self, userInfo: nil))
-    }
-
-    public override func mouseEntered(with event: NSEvent) { evaluateHover(event) }
-    public override func mouseMoved(with event: NSEvent) { evaluateHover(event) }
-
-    public override func mouseExited(with event: NSEvent) {
-        hoverGate.reset()
-        setTransition(0, animated: true)
-    }
-
-    /// Only the cards react to the pointer. Over a card the row expands and, if a different
-    /// card is under the pointer, that one is promoted to the centre. Over anything else the
-    /// row returns to the resting state. Without that last case the window, which covers the
-    /// whole screen, would latch open on launch.
-    private func evaluateHover(_ event: NSEvent) {
-        guard !library.isEmpty, animationTimer == nil else { return }
-        let point = convert(event.locationInWindow, from: nil)
-        let engine = LayoutEngine(config: config, screen: screenMetrics, transition: transition)
-
-        guard let slot = engine.hitTestSlot(point, slots: currentSlots) else {
-            if transition > 0 { setTransition(0, animated: true) }
-            return
-        }
-
-        if config.hoverPromotes,
-           slot.index != focus,
-           hoverGate.shouldPromote(point: point, time: CACurrentMediaTime()) {
-            let delta = signedStep(from: focus, to: slot.index)
-            rotate(delta)
-            return
-        }
-        if transition < 1 { setTransition(1, animated: true) }
-    }
-
-    /// Shortest signed number of steps from one index to another, so promoting wraps the
-    /// short way round rather than scrolling most of the library.
-    private func signedStep(from: Int, to: Int) -> Int {
-        let count = library.count
-        guard count > 0 else { return 0 }
-        var delta = Queue.wrapIndex(to, count: count) - Queue.wrapIndex(from, count: count)
-        if delta > count / 2 { delta -= count }
-        if delta < -(count / 2) { delta += count }
-        return delta
+    /// Space toggles the preview on the centred card. It is a toggle rather than expand-only
+    /// so the row can be returned to its resting state without dismissing the picker.
+    public func toggleExpanded() {
+        setTransition(transition > 0 ? 0 : 1, animated: true)
     }
 
     public override func keyDown(with event: NSEvent) {
@@ -276,16 +228,6 @@ public final class CorridorView: NSView {
         case 36, 49: applyFocused()
         default: super.keyDown(with: event)
         }
-    }
-
-    public override func mouseDown(with event: NSEvent) {
-        let point = convert(event.locationInWindow, from: nil)
-        let engine = LayoutEngine(config: config, screen: screenMetrics, transition: transition)
-        guard let slot = engine.hitTestSlot(point, slots: currentSlots) else {
-            onDismiss?()
-            return
-        }
-        onApply?(library[slot.index])
     }
 
     // MARK: - layout

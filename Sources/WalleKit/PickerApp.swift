@@ -81,25 +81,33 @@ public final class PickerController: NSObject, NSApplicationDelegate {
 
         window.contentView = view
         window.makeFirstResponder(view)
+        // The picker must take keyboard focus immediately, because the whole interaction is
+        // keyboard driven. Previously it only became the key window once it had been
+        // clicked, which is why arrow keys did nothing before a click.
         window.makeKeyAndOrderFront(nil)
-        NSApp.activate()
+        NSApp.activate(ignoringOtherApps: true)
+        window.orderFrontRegardless()
+        window.makeKey()
 
         self.window = window
         self.corridor = view
 
-        // Keys are handled here rather than on the view, so they work no matter which view
-        // happens to be first responder. Returning nil consumes the event.
+        // Keyboard only. Handling keys here rather than on the view means they work no
+        // matter which view happens to be first responder. Returning nil consumes the event.
         keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [view] event in
             switch event.keyCode {
-            case 53:                                    // escape
+            case 53:                                    // escape        - dismiss
                 exit(2)
-            case 123, 126:                              // left, up
+            case 123, 126:                              // left, up      - move
                 view.rotate(-1)
                 return nil
-            case 124, 125:                              // right, down
+            case 124, 125:                              // right, down   - move
                 view.rotate(1)
                 return nil
-            case 36, 49:                                // return, space
+            case 49:                                    // space         - expand/collapse
+                view.toggleExpanded()
+                return nil
+            case 36, 76:                                // return, enter - apply
                 view.applyFocused()
                 return nil
             default:
