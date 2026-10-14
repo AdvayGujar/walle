@@ -53,8 +53,34 @@ public final class PickerController: NSObject, NSApplicationDelegate {
                                 currentPath: currentPath,
                                 transition: startsExpanded ? 1 : 0)
         view.reload(library: library, focus: focusIndex)
-        window.contentView = view
 
+        let setter = NSWorkspaceSetter()
+        let history = HistoryStore(fileURL: paths.historyFile)
+        let stateStore = StateStore(fileURL: paths.stateFile)
+        let applyTo = config.applyTo
+        let fillMode = config.fillMode
+
+        view.onApply = { wallpaper in
+            do {
+                try setter.setWallpaper(at: wallpaper.url, target: applyTo,
+                                        fillMode: fillMode)
+            } catch {
+                FileHandle.standardError.write(
+                    Data(("walle-picker: " + String(describing: error) + "\n").utf8))
+                exit(1)
+            }
+            // History is written only after the desktop actually changed.
+            try? history.append(HistoryEntry(path: wallpaper.path, appliedAt: Date(),
+                                             screenUUID: nil, mode: "picker"))
+            var state = stateStore.load()
+            state.lastAppliedPath = wallpaper.path
+            try? stateStore.save(state)
+            exit(0)
+        }
+        view.onDismiss = { exit(2) }
+
+        window.contentView = view
+        window.makeFirstResponder(view)
         window.makeKeyAndOrderFront(nil)
         NSApp.activate()
 

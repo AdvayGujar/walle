@@ -44,6 +44,15 @@ public final class CorridorView: NSView {
     private var animationFrom: Double = 0
     private var animationTo: Double = 1
 
+    /// The geometry currently on screen, reused for hit testing.
+    private var currentSlots: [SlotGeometry] = []
+    private var hoverGate = HoverGate()
+
+    /// Called when a wallpaper should be applied.
+    public var onApply: ((Wallpaper) -> Void)?
+    /// Called when the picker should dismiss without changing anything.
+    public var onDismiss: (() -> Void)?
+
     public init(frame: NSRect, config: Config, provider: ThumbnailProvider,
                 currentPath: String?, transition: Double = 1,
                 debugColours: Bool = false) {
@@ -125,11 +134,57 @@ public final class CorridorView: NSView {
     }
 
     public override func mouseExited(with event: NSEvent) {
+        hoverGate.reset()
         setTransition(0, animated: true)
     }
 
+    /// Hovering a side card promotes it to the centre. The gate is what stops the row
+    /// chasing its own rotation: after a promotion the card is under the pointer, so
+    /// hit-testing returns the focused index and nothing further happens.
     public override func mouseMoved(with event: NSEvent) {
+        setTransition(1, animated: true)
+        guard config.hoverPromotes, !library.isEmpty else { return }
+        let point = convert(event.locationInWindow, from: nil)
+        guard hoverGate.shouldPromote(point: point, time: CACurrentMediaTime()) else { return }
+        let engine = LayoutEngine(config: config, screen: screenMetrics, transition: transition)
+        guard let slot = engine.hitTestSlot(point, slots: currentSlots),
+              slot.index != focus else { return }
+        focus = Queue.wrapIndex(slot.index, count: library.count)
+        rebuildCards(reloadContents: false)
+    }
+
+    /// Rotates the row by one card. Wraps forever in both directions.
+    public func rotate(_ delta: Int) {
+        guard !library.isEmpty else { return }
+        focus = Queue.focus(after: delta, from: focus, count: library.count)
+        hoverGate.reset()
+        rebuildCards(reloadContents: false)
         if transition < 1 { setTransition(1, animated: true) }
+    }
+
+    public func applyFocused() {
+        guard !library.isEmpty else { return }
+        onApply?(library[Queue.wrapIndex(focus, count: library.count)])
+    }
+
+    public override func keyDown(with event: NSEvent) {
+        switch event.keyCode {
+        case 123, 126: rotate(-1)          // left, up
+        case 124, 125: rotate(1)           // right, down
+        case 36, 49: applyFocused()        // return, space
+        default: super.keyDown(with: event)
+        }
+    }
+
+    /// Clicking a card applies it. Clicking the backdrop dismisses.
+    public override func mouseDown(with event: NSEvent) {
+        let point = convert(event.locationInWindow, from: nil)
+        let engine = LayoutEngine(config: config, screen: screenMetrics, transition: transition)
+        guard let slot = engine.hitTestSlot(point, slots: currentSlots) else {
+            onDismiss?()
+            return
+        }
+        onApply?(library[slot.index])
     }
 
     // MARK: - layout
@@ -175,6 +230,7 @@ public final class CorridorView: NSView {
     private func rebuildCards(reloadContents: Bool) {
         let engine = LayoutEngine(config: config, screen: screenMetrics, transition: transition)
         let slots = engine.slots(count: library.count, focus: focus)
+        currentSlots = slots
 
         while cards.count < slots.count {
             let card = CardLayer()
