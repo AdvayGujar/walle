@@ -179,15 +179,17 @@ public final class CorridorView: NSView {
         var contents: [Int: Wallpaper] = [:]
         for destination in 0..<count {
             to[destination] = newSlots[destination]
-            let source = destination - delta
-            if source >= 0, source < count {
-                // The card that was at source slides into this destination.
+            if let source = Carousel.sourceSlot(destination: destination, delta: delta,
+                                                slotCount: count) {
+                // The card that was at source slides into this destination, keeping its own
+                // wallpaper. Getting this direction wrong is what made the row slide the
+                // wrong way and then snap when the animation ended.
                 from[destination] = oldSlots[source]
                 contents[destination] = oldContents[source]
             } else {
-                // A card entering from off the end.
+                // A card entering from off the end of the row.
                 var ghost = newSlots[destination]
-                let push = engine.pitch * (delta > 0 ? 1 : -1)
+                let push = engine.pitch * Carousel.entryDirection(delta: delta)
                 ghost.rect = ghost.rect.offsetBy(dx: CGFloat(push), dy: 0)
                 from[destination] = ghost
                 contents[destination] = library[newSlots[destination].index]
