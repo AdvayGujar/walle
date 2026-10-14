@@ -70,7 +70,7 @@ public struct Config: Sendable, Equatable {
         sort: SortMode = .name,
         designWidth: Double = 1920,
         slots: Int = 5,
-        cardWidth: Double = 140,
+        cardWidth: Double = 280,
         cardHeight: Double = 420,
         cardGap: Double = 10,
         selectedCardHeight: Double = 540,
