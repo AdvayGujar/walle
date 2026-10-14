@@ -720,20 +720,42 @@ public struct CLI {
         let rcPath = environment.paths.home.appendingPathComponent(".config/skhd/skhdrc").path
         if let data = fm.contents(atPath: rcPath),
            let text = String(data: data, encoding: .utf8) {
-            let bound = text.split(separator: "\n").contains { line in
+            let bindings = text.split(separator: "\n").filter { line in
                 let trimmed = line.trimmingCharacters(in: .whitespaces)
-                return !trimmed.hasPrefix("#") && trimmed.contains("walle")
+                return !trimmed.isEmpty && !trimmed.hasPrefix("#") && trimmed.contains("walle")
             }
-            checks.append(("skhd binding", bound,
-                           bound ? "found in " + rcPath : "no line mentioning walle in " + rcPath))
+            if bindings.isEmpty {
+                checks.append(("skhd binding", false, "no line mentioning walle in " + rcPath))
+            } else if bindings.count > 1 {
+                // Two bindings mean the hotkey fires walle twice. The second instance sees
+                // the lock held and signals the first to close, so the picker flashes and
+                // vanishes.
+                checks.append(("skhd binding", false,
+                               String(bindings.count) + " duplicate bindings in " + rcPath
+                               + "; keep exactly one"))
+            } else {
+                checks.append(("skhd binding", true, "found in " + rcPath))
+            }
         } else {
             checks.append(("skhd binding", false, "no " + rcPath))
         }
 
-        // Accessibility cannot be checked from here: it is granted to skhd, not to us.
-        checks.append(("skhd accessibility", true,
-                       "cannot be checked from here; grant it in System Settings > "
-                       + "Privacy & Security > Accessibility if the hotkey does nothing"))
+        // Accessibility is granted to skhd, not to us, so it cannot be queried directly.
+        // But skhd says so in its own log and then aborts, and launchd restarts it, so the
+        // log is a reliable proxy and far more useful than a shrug.
+        let skhdErrLog = "/tmp/skhd_" + environment.paths.home.lastPathComponent + ".err.log"
+        if let data = fm.contents(atPath: skhdErrLog),
+           let text = String(data: data, encoding: .utf8),
+           text.lowercased().contains("accessibility") {
+            checks.append(("skhd accessibility", false,
+                           "skhd is aborting for lack of Accessibility access (see "
+                           + skhdErrLog + "); grant it in System Settings > Privacy & Security "
+                           + "> Accessibility, then restart skhd"))
+        } else {
+            checks.append(("skhd accessibility", true,
+                           "no accessibility complaint in " + skhdErrLog
+                           + " (grant it in System Settings if the hotkey does nothing)"))
+        }
 
         let failures = checks.filter { !$0.ok }.count
         if options.has("json") {
