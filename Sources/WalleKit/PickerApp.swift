@@ -87,12 +87,24 @@ public final class PickerController: NSObject, NSApplicationDelegate {
         self.window = window
         self.corridor = view
 
-        // Escape dismisses with no change.
-        keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
-            if event.keyCode == 53 {
-                exit(0)
+        // Keys are handled here rather than on the view, so they work no matter which view
+        // happens to be first responder. Returning nil consumes the event.
+        keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [view] event in
+            switch event.keyCode {
+            case 53:                                    // escape
+                exit(2)
+            case 123, 126:                              // left, up
+                view.rotate(-1)
+                return nil
+            case 124, 125:                              // right, down
+                view.rotate(1)
+                return nil
+            case 36, 49:                                // return, space
+                view.applyFocused()
+                return nil
+            default:
+                return event
             }
-            return event
         }
     }
 

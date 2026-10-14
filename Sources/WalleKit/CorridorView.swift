@@ -20,10 +20,13 @@ public enum SnapshotError: Error, CustomStringConvertible {
 
 /// The card row.
 ///
-/// All geometry comes from LayoutEngine as a function of a single transition value, so
-/// this class only owns the layer pool, the thumbnails, the paint order and the clock that
-/// advances the transition. Because the animation is just that one number, a snapshot at
-/// any point of the transition shows exactly what the animation will render.
+/// All geometry comes from LayoutEngine as a function of a transition value, so the class
+/// owns three things: the layer pool, a single animation clock, and the hit testing.
+///
+/// Both kinds of motion run on that one clock. Expanding interpolates the transition;
+/// rotating interpolates each card between the slot it came from and the slot it is going
+/// to, while the card keeps its own wallpaper. That is what makes scrolling the row look
+/// like the cards sliding rather than the pictures being swapped.
 public final class CorridorView: NSView {
 
     private var config: Config
@@ -38,19 +41,26 @@ public final class CorridorView: NSView {
     private var cards: [CardLayer] = []
     private let backdrop = CALayer()
     private let debugColours: Bool
+    private var lastCardCount = 0
 
-    private var animationTimer: Timer?
-    private var animationStart: CFTimeInterval = 0
-    private var animationFrom: Double = 0
-    private var animationTo: Double = 1
-
-    /// The geometry currently on screen, reused for hit testing.
+    /// Geometry currently on screen, reused for hit testing.
     private var currentSlots: [SlotGeometry] = []
     private var hoverGate = HoverGate()
 
-    /// Called when a wallpaper should be applied.
+    // One clock drives everything.
+    private var animationTimer: Timer?
+    private var animationStart: CFTimeInterval = 0
+    private var animationDurationMs: Double = 0
+    private var easedProgress: Double = 1
+    private var fromTransition: Double = 1
+    private var toTransition: Double = 1
+
+    // Rotation state: where each card came from and where it is heading.
+    private var rotationFrom: [Int: SlotGeometry] = [:]
+    private var rotationTo: [Int: SlotGeometry] = [:]
+    private var rotationContents: [Int: Wallpaper] = [:]
+
     public var onApply: ((Wallpaper) -> Void)?
-    /// Called when the picker should dismiss without changing anything.
     public var onDismiss: (() -> Void)?
 
     public init(frame: NSRect, config: Config, provider: ThumbnailProvider,
@@ -81,44 +91,131 @@ public final class CorridorView: NSView {
     public func reload(library: [Wallpaper], focus: Int) {
         self.library = library
         self.focus = library.isEmpty ? 0 : Queue.wrapIndex(focus, count: library.count)
+        cancelAnimation()
         rebuildCards(reloadContents: true)
     }
 
-    /// Sets the morph position. Animated runs an ease-out over config.animationMs,
-    /// advancing the single transition value the geometry is derived from.
-    public func setTransition(_ target: Double, animated: Bool) {
-        let target = min(1, max(0, target))
+    // MARK: - animation clock
+
+    private func cancelAnimation() {
         animationTimer?.invalidate()
         animationTimer = nil
+        animationDurationMs = 0
+        easedProgress = 1
+        rotationFrom = [:]
+        rotationTo = [:]
+        rotationContents = [:]
+    }
 
-        guard animated, config.animationMs > 0, abs(target - transition) > 0.0001 else {
-            transition = target
-            rebuildCards(reloadContents: false)
-            return
-        }
-
-        animationFrom = transition
-        animationTo = target
+    private func startAnimation(durationMs: Double) {
+        animationTimer?.invalidate()
+        animationDurationMs = max(1, durationMs)
         animationStart = CACurrentMediaTime()
+        easedProgress = 0
+        // The timer runs in .common so it keeps ticking while the pointer is being tracked.
         let timer = Timer(timeInterval: 1.0 / 60.0, repeats: true) { [weak self] timer in
             guard let self else { timer.invalidate(); return }
             let elapsedMs = (CACurrentMediaTime() - self.animationStart) * 1000
-            let progress = min(1, elapsedMs / self.config.animationMs)
+            let linear = min(1, elapsedMs / self.animationDurationMs)
             // ease-out cubic
-            let eased = 1 - pow(1 - progress, 3)
-            self.transition = self.animationFrom
-                + (self.animationTo - self.animationFrom) * eased
+            self.easedProgress = 1 - pow(1 - linear, 3)
+            self.transition = self.fromTransition
+                + (self.toTransition - self.fromTransition) * self.easedProgress
             self.rebuildCards(reloadContents: false)
-            if progress >= 1 {
+            if linear >= 1 {
                 timer.invalidate()
                 self.animationTimer = nil
+                self.easedProgress = 1
+                self.rotationFrom = [:]
+                self.rotationTo = [:]
+                self.rotationContents = [:]
+                self.rebuildCards(reloadContents: false)
             }
         }
         RunLoop.main.add(timer, forMode: .common)
         animationTimer = timer
     }
 
-    // MARK: - hover (minimal trigger; per-card hover and the anti-spin guards are M5b)
+    /// Moves between the resting row and the expanded preview.
+    public func setTransition(_ target: Double, animated: Bool) {
+        let target = min(1, max(0, target))
+        let needsMove = abs(target - transition) > 0.0001
+        animationTimer?.invalidate()
+        animationTimer = nil
+        rotationFrom = [:]
+        rotationTo = [:]
+        rotationContents = [:]
+
+        guard animated, config.animationMs > 0, needsMove else {
+            easedProgress = 1
+            transition = target
+            rebuildCards(reloadContents: false)
+            return
+        }
+        fromTransition = transition
+        toTransition = target
+        startAnimation(durationMs: config.animationMs)
+    }
+
+    /// Rotates the row by one card, sliding every card into its neighbour's place.
+    public func rotate(_ delta: Int) {
+        guard library.count > 1 else { return }
+        let count = currentSlots.count
+        guard count > 1 else { return }
+
+        let oldSlots = currentSlots
+        let oldContents: [Wallpaper] = (0..<count).map { library[oldSlots[$0].index] }
+
+        focus = Queue.focus(after: delta, from: focus, count: library.count)
+        hoverGate.reset()
+
+        let engine = LayoutEngine(config: config, screen: screenMetrics, transition: transition)
+        let newSlots = engine.slots(count: library.count, focus: focus)
+        guard newSlots.count == count else {
+            rebuildCards(reloadContents: true)
+            return
+        }
+
+        var from: [Int: SlotGeometry] = [:]
+        var to: [Int: SlotGeometry] = [:]
+        var contents: [Int: Wallpaper] = [:]
+        for destination in 0..<count {
+            to[destination] = newSlots[destination]
+            let source = destination - delta
+            if source >= 0, source < count {
+                // The card that was at source slides into this destination.
+                from[destination] = oldSlots[source]
+                contents[destination] = oldContents[source]
+            } else {
+                // A card entering from off the end.
+                var ghost = newSlots[destination]
+                let push = engine.pitch * (delta > 0 ? 1 : -1)
+                ghost.rect = ghost.rect.offsetBy(dx: CGFloat(push), dy: 0)
+                from[destination] = ghost
+                contents[destination] = library[newSlots[destination].index]
+            }
+        }
+
+        rotationFrom = from
+        rotationTo = to
+        rotationContents = contents
+        fromTransition = transition
+        toTransition = transition
+
+        if config.animationMs > 0 {
+            startAnimation(durationMs: min(config.animationMs, 260))
+        } else {
+            cancelAnimation()
+            rebuildCards(reloadContents: true)
+        }
+    }
+
+    public func applyFocused() {
+        guard !library.isEmpty else { return }
+        onApply?(library[Queue.wrapIndex(focus, count: library.count)])
+    }
+
+    // MARK: - hover
 
     public override func updateTrackingAreas() {
         super.updateTrackingAreas()
@@ -129,31 +226,20 @@ public final class CorridorView: NSView {
             owner: self, userInfo: nil))
     }
 
-    public override func mouseEntered(with event: NSEvent) {
-        evaluateHover(event)
-    }
+    public override func mouseEntered(with event: NSEvent) { evaluateHover(event) }
+    public override func mouseMoved(with event: NSEvent) { evaluateHover(event) }
 
     public override func mouseExited(with event: NSEvent) {
         hoverGate.reset()
         setTransition(0, animated: true)
     }
 
-    public override func mouseMoved(with event: NSEvent) {
-        evaluateHover(event)
-    }
-
-    /// Only the cards react to the pointer.
-    ///
-    /// Over a card the row expands, and if a different card is under the pointer it is
-    /// promoted to the centre. Over anything else the row returns to its resting
-    /// collapsed state. Without that final case the window, which covers the whole screen,
-    /// would latch open on launch and the resting state would never be seen.
-    ///
-    /// The gate is what stops the row chasing its own rotation: after a promotion the
-    /// promoted card is under the pointer, so the next hit test returns the focused index
-    /// and nothing further happens.
+    /// Only the cards react to the pointer. Over a card the row expands and, if a different
+    /// card is under the pointer, that one is promoted to the centre. Over anything else the
+    /// row returns to the resting state. Without that last case the window, which covers the
+    /// whole screen, would latch open on launch.
     private func evaluateHover(_ event: NSEvent) {
-        guard !library.isEmpty else { return }
+        guard !library.isEmpty, animationTimer == nil else { return }
         let point = convert(event.locationInWindow, from: nil)
         let engine = LayoutEngine(config: config, screen: screenMetrics, transition: transition)
 
@@ -165,36 +251,33 @@ public final class CorridorView: NSView {
         if config.hoverPromotes,
            slot.index != focus,
            hoverGate.shouldPromote(point: point, time: CACurrentMediaTime()) {
-            focus = Queue.wrapIndex(slot.index, count: library.count)
-            rebuildCards(reloadContents: false)
+            let delta = signedStep(from: focus, to: slot.index)
+            rotate(delta)
+            return
         }
         if transition < 1 { setTransition(1, animated: true) }
     }
 
-    /// Rotates the row by one card. Wraps forever in both directions.
-    public func rotate(_ delta: Int) {
-        guard !library.isEmpty else { return }
-        focus = Queue.focus(after: delta, from: focus, count: library.count)
-        hoverGate.reset()
-        rebuildCards(reloadContents: false)
-        if transition < 1 { setTransition(1, animated: true) }
-    }
-
-    public func applyFocused() {
-        guard !library.isEmpty else { return }
-        onApply?(library[Queue.wrapIndex(focus, count: library.count)])
+    /// Shortest signed number of steps from one index to another, so promoting wraps the
+    /// short way round rather than scrolling most of the library.
+    private func signedStep(from: Int, to: Int) -> Int {
+        let count = library.count
+        guard count > 0 else { return 0 }
+        var delta = Queue.wrapIndex(to, count: count) - Queue.wrapIndex(from, count: count)
+        if delta > count / 2 { delta -= count }
+        if delta < -(count / 2) { delta += count }
+        return delta
     }
 
     public override func keyDown(with event: NSEvent) {
         switch event.keyCode {
-        case 123, 126: rotate(-1)          // left, up
-        case 124, 125: rotate(1)           // right, down
-        case 36, 49: applyFocused()        // return, space
+        case 123, 126: rotate(-1)
+        case 124, 125: rotate(1)
+        case 36, 49: applyFocused()
         default: super.keyDown(with: event)
         }
     }
 
-    /// Clicking a card applies it. Clicking the backdrop dismisses.
     public override func mouseDown(with event: NSEvent) {
         let point = convert(event.locationInWindow, from: nil)
         let engine = LayoutEngine(config: config, screen: screenMetrics, transition: transition)
@@ -258,12 +341,18 @@ public final class CorridorView: NSView {
 
         let accent = CorridorView.color(fromHex: config.cardBorderColor)
         let backingScale = window?.backingScaleFactor ?? 2.0
+        let morphing = easedProgress < 1
 
         for (index, slot) in slots.enumerated() {
             let card = cards[index]
-            let wallpaper = library[slot.index]
-            // The focused card always uses the preview-sized thumbnail: it is the one that
-            // can grow large, and swapping size class mid-morph would flash.
+            var geometry = slot
+            if morphing, let from = rotationFrom[index], let to = rotationTo[index] {
+                geometry = LayoutEngine.interpolate(from, to, easedProgress)
+            }
+            // A card keeps its own wallpaper while it slides, so take the content from the
+            // rotation map rather than from whatever slot it currently occupies.
+            let wallpaper = morphing ? (rotationContents[index] ?? library[slot.index])
+                                     : library[slot.index]
             let wanted: ThumbSizeClass = slot.isCenter ? .preview : .row
 
             if reloadContents || card.wallpaper?.path != wallpaper.path
@@ -274,7 +363,7 @@ public final class CorridorView: NSView {
             if debugColours {
                 card.setContents(CorridorView.solidImage(forSlot: index))
             }
-            card.apply(slot, accent: accent, backingScale: backingScale)
+            card.apply(geometry, accent: accent, backingScale: backingScale)
             card.isHidden = false
         }
 
@@ -282,16 +371,20 @@ public final class CorridorView: NSView {
             cards[index].isHidden = true
         }
 
-        // The on-screen compositor sorts siblings by zPosition, but CALayer.render(in:)
-        // -- which --snapshot uses -- paints them in sublayer order. Re-inserting the cards
-        // back-to-front makes the paint order explicit and identical in both paths.
-        let paintOrder = slots.indices
-            .map { index -> (card: CardLayer, depth: Double) in
-                (cards[index], slots[index].zPosition)
+        // Paint order. The on-screen compositor sorts by zPosition but CALayer.render(in:)
+        // paints in sublayer order, so the order is made explicit. This is only redone when
+        // the number of cards changes: re-adding sublayers every frame meant restructuring
+        // the layer tree 60 times a second, which is what made the animation stutter.
+        if cards.count != lastCardCount {
+            lastCardCount = cards.count
+            let paintOrder = slots.indices
+                .map { index -> (card: CardLayer, depth: Double) in
+                    (cards[index], slots[index].zPosition)
+                }
+                .sorted { $0.depth < $1.depth }
+            for entry in paintOrder {
+                layer?.addSublayer(entry.card)
             }
-            .sorted { $0.depth < $1.depth }
-        for entry in paintOrder {
-            layer?.addSublayer(entry.card)
         }
     }
 

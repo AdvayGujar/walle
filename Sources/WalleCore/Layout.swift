@@ -73,6 +73,24 @@ public struct LayoutEngine: Sendable {
 
     static func lerp(_ a: Double, _ b: Double, _ t: Double) -> Double { a + (b - a) * t }
 
+    /// Interpolates between two card states so a card can slide from one slot to the next.
+    /// The bounding box is recomputed from the interpolated mid-width, height and skew
+    /// rather than interpolated on its own, so the shape stays self-consistent throughout.
+    public static func interpolate(_ a: SlotGeometry, _ b: SlotGeometry, _ t: Double) -> SlotGeometry {
+        let u = min(1, max(0, t))
+        var result = b
+        result.width = lerp(a.width, b.width, u)
+        result.height = lerp(a.height, b.height, u)
+        result.skew = lerp(a.skew, b.skew, u)
+        result.alpha = lerp(a.alpha, b.alpha, u)
+        let midX = lerp(Double(a.rect.midX), Double(b.rect.midX), u)
+        let midY = lerp(Double(a.rect.midY), Double(b.rect.midY), u)
+        let boxWidth = boundingWidth(midWidth: result.width, height: result.height, skew: result.skew)
+        result.rect = CGRect(x: midX - boxWidth / 2, y: midY - result.height / 2,
+                             width: boxWidth, height: result.height)
+        return result
+    }
+
     public func slots(count: Int, focus: Int) -> [SlotGeometry] {
         let n = Queue.effectiveSlotCount(configured: config.slots, libraryCount: count)
         guard n > 0 else { return [] }
