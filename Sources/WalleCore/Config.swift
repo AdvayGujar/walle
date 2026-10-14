@@ -8,14 +8,6 @@ public enum SortMode: String, Sendable, CaseIterable {
     }
 }
 
-public enum ShearMode: String, Sendable, CaseIterable {
-    case uniform, mirror
-
-    public static func parse(_ raw: String) -> ShearMode? {
-        ShearMode(rawValue: raw.lowercased().trimmingCharacters(in: .whitespaces))
-    }
-}
-
 public enum ApplyTarget: String, Sendable, CaseIterable {
     case all, active
 
@@ -32,35 +24,35 @@ public enum FillMode: String, Sendable, CaseIterable {
     }
 }
 
-/// Everything tunable, parsed from a plain "key = value" file.
-/// A deliberately dumb format: Swift needs no TOML or JSON parser for it, it stays
-/// hand-editable, and Config.set can rewrite it without losing comments elsewhere.
+/// Everything tunable, parsed from a plain key = value file.
+///
+/// Geometry is expressed in design units for a 1920-wide screen. Layout multiplies every
+/// length by scale = screenWidth / designWidth, so the whole composition scales with the
+/// display instead of being pinned to one resolution.
 public struct Config: Sendable, Equatable {
     public var wallpaperDirs: [String]
     public var recursive: Bool
     public var sort: SortMode
 
+    public var designWidth: Double
     public var slots: Int
-    public var tileWidth: Double
-    public var tileHeight: Double
-    /// Strip width in the resting row, as a fraction of the expanded strip width.
-    public var collapsedWidthScale: Double
-    public var tileShear: Double
-    public var shearMode: ShearMode
-    public var overlap: Double
-    public var depthStep: Double
-    public var perspective: Double
-    public var scaleFalloff: Double
+    public var cardWidth: Double
+    public var cardHeight: Double
+    public var cardGap: Double
+    public var selectedCardHeight: Double
+    public var expandedCardWidth: Double
+    public var expandedCardHeight: Double
+    public var cardSkew: Double
+    public var cardCornerRadius: Double
+    public var cardBorderWidth: Double
+    public var cardBorderColor: String
+    public var rowCenterYFrac: Double
     public var dimFalloff: Double
     public var dimFloor: Double
-    public var expandOnEnter: Bool
-    public var hoverPromotes: Bool
-    public var rowCenterYFrac: Double
-    public var previewMaxWFrac: Double
-    public var previewMaxHFrac: Double
-    public var previewGap: Double
     public var dimAlpha: Double
     public var animationMs: Double
+    public var expandOnEnter: Bool
+    public var hoverPromotes: Bool
 
     public var applyTo: ApplyTarget
     public var fillMode: FillMode
@@ -73,26 +65,25 @@ public struct Config: Sendable, Equatable {
         wallpaperDirs: [String] = ["~/Downloads/wallpaper"],
         recursive: Bool = true,
         sort: SortMode = .name,
+        designWidth: Double = 1920,
         slots: Int = 5,
-        tileWidth: Double = 100,
-        tileHeight: Double = 500,
-        collapsedWidthScale: Double = 0.5,
-        tileShear: Double = 0.22,
-        shearMode: ShearMode = .uniform,
-        overlap: Double = 0.5,
-        depthStep: Double = 130,
-        perspective: Double = 1200,
-        scaleFalloff: Double = 0.85,
-        dimFalloff: Double = 0.22,
-        dimFloor: Double = 0.15,
+        cardWidth: Double = 120,
+        cardHeight: Double = 420,
+        cardGap: Double = 10,
+        selectedCardHeight: Double = 540,
+        expandedCardWidth: Double = 880,
+        expandedCardHeight: Double = 400,
+        cardSkew: Double = -0.35,
+        cardCornerRadius: Double = 12,
+        cardBorderWidth: Double = 3,
+        cardBorderColor: String = "FF9F0A",
+        rowCenterYFrac: Double = 0.5,
+        dimFalloff: Double = 0.18,
+        dimFloor: Double = 0.35,
+        dimAlpha: Double = 0.35,
+        animationMs: Double = 350,
         expandOnEnter: Bool = true,
         hoverPromotes: Bool = true,
-        rowCenterYFrac: Double = 0.50,
-        previewMaxWFrac: Double = 0.46,
-        previewMaxHFrac: Double = 0.56,
-        previewGap: Double = 0,
-        dimAlpha: Double = 0.35,
-        animationMs: Double = 220,
         applyTo: ApplyTarget = .all,
         fillMode: FillMode = .fill,
         thumbMaxPx: Int = 512,
@@ -103,26 +94,25 @@ public struct Config: Sendable, Equatable {
         self.wallpaperDirs = wallpaperDirs
         self.recursive = recursive
         self.sort = sort
+        self.designWidth = designWidth
         self.slots = slots
-        self.tileWidth = tileWidth
-        self.tileHeight = tileHeight
-        self.collapsedWidthScale = collapsedWidthScale
-        self.tileShear = tileShear
-        self.shearMode = shearMode
-        self.overlap = overlap
-        self.depthStep = depthStep
-        self.perspective = perspective
-        self.scaleFalloff = scaleFalloff
+        self.cardWidth = cardWidth
+        self.cardHeight = cardHeight
+        self.cardGap = cardGap
+        self.selectedCardHeight = selectedCardHeight
+        self.expandedCardWidth = expandedCardWidth
+        self.expandedCardHeight = expandedCardHeight
+        self.cardSkew = cardSkew
+        self.cardCornerRadius = cardCornerRadius
+        self.cardBorderWidth = cardBorderWidth
+        self.cardBorderColor = cardBorderColor
+        self.rowCenterYFrac = rowCenterYFrac
         self.dimFalloff = dimFalloff
         self.dimFloor = dimFloor
-        self.expandOnEnter = expandOnEnter
-        self.hoverPromotes = hoverPromotes
-        self.rowCenterYFrac = rowCenterYFrac
-        self.previewMaxWFrac = previewMaxWFrac
-        self.previewMaxHFrac = previewMaxHFrac
-        self.previewGap = previewGap
         self.dimAlpha = dimAlpha
         self.animationMs = animationMs
+        self.expandOnEnter = expandOnEnter
+        self.hoverPromotes = hoverPromotes
         self.applyTo = applyTo
         self.fillMode = fillMode
         self.thumbMaxPx = thumbMaxPx
@@ -131,15 +121,14 @@ public struct Config: Sendable, Equatable {
         self.logLevel = logLevel
     }
 
-    /// The order keys are written out in. Also the canonical key list.
     public static let keyOrder: [String] = [
         "wallpaper_dirs", "recursive", "sort",
-        "slots", "tile_width", "tile_height", "collapsed_width_scale",
-        "tile_shear", "shear_mode", "overlap",
-        "depth_step", "perspective", "scale_falloff", "dim_falloff", "dim_floor",
-        "expand_on_enter", "hover_promotes", "row_center_y_frac",
-        "preview_max_w_frac", "preview_max_h_frac", "preview_gap",
-        "dim_alpha", "animation_ms",
+        "design_width", "slots",
+        "card_width", "card_height", "card_gap", "selected_card_height",
+        "expanded_card_width", "expanded_card_height",
+        "card_skew", "card_corner_radius", "card_border_width", "card_border_color",
+        "row_center_y_frac", "dim_falloff", "dim_floor", "dim_alpha",
+        "animation_ms", "expand_on_enter", "hover_promotes",
         "apply_to", "fill_mode", "thumb_max_px", "preview_max_px",
         "type_to_filter", "log_level",
     ]
@@ -163,7 +152,6 @@ public struct Config: Sendable, Equatable {
         return (config, warnings)
     }
 
-    /// Returns false when the key is unknown. Malformed values keep the default and warn.
     @discardableResult
     public mutating func apply(key: String, value: String) -> Bool {
         switch key {
@@ -172,27 +160,25 @@ public struct Config: Sendable, Equatable {
                 .filter { !$0.isEmpty }
         case "recursive": recursive = parseBool(value) ?? recursive
         case "sort": sort = SortMode.parse(value) ?? sort
+        case "design_width": designWidth = parseDouble(value) ?? designWidth
         case "slots": slots = parseInt(value) ?? slots
-        case "tile_width": tileWidth = parseDouble(value) ?? tileWidth
-        case "tile_height": tileHeight = parseDouble(value) ?? tileHeight
-        case "collapsed_width_scale":
-            collapsedWidthScale = parseDouble(value) ?? collapsedWidthScale
-        case "tile_shear": tileShear = parseDouble(value) ?? tileShear
-        case "shear_mode": shearMode = ShearMode.parse(value) ?? shearMode
-        case "overlap": overlap = parseDouble(value) ?? overlap
-        case "depth_step": depthStep = parseDouble(value) ?? depthStep
-        case "perspective": perspective = parseDouble(value) ?? perspective
-        case "scale_falloff": scaleFalloff = parseDouble(value) ?? scaleFalloff
+        case "card_width": cardWidth = parseDouble(value) ?? cardWidth
+        case "card_height": cardHeight = parseDouble(value) ?? cardHeight
+        case "card_gap": cardGap = parseDouble(value) ?? cardGap
+        case "selected_card_height": selectedCardHeight = parseDouble(value) ?? selectedCardHeight
+        case "expanded_card_width": expandedCardWidth = parseDouble(value) ?? expandedCardWidth
+        case "expanded_card_height": expandedCardHeight = parseDouble(value) ?? expandedCardHeight
+        case "card_skew": cardSkew = parseDouble(value) ?? cardSkew
+        case "card_corner_radius": cardCornerRadius = parseDouble(value) ?? cardCornerRadius
+        case "card_border_width": cardBorderWidth = parseDouble(value) ?? cardBorderWidth
+        case "card_border_color": cardBorderColor = value
+        case "row_center_y_frac": rowCenterYFrac = parseDouble(value) ?? rowCenterYFrac
         case "dim_falloff": dimFalloff = parseDouble(value) ?? dimFalloff
         case "dim_floor": dimFloor = parseDouble(value) ?? dimFloor
-        case "expand_on_enter": expandOnEnter = parseBool(value) ?? expandOnEnter
-        case "hover_promotes": hoverPromotes = parseBool(value) ?? hoverPromotes
-        case "row_center_y_frac": rowCenterYFrac = parseDouble(value) ?? rowCenterYFrac
-        case "preview_max_w_frac": previewMaxWFrac = parseDouble(value) ?? previewMaxWFrac
-        case "preview_max_h_frac": previewMaxHFrac = parseDouble(value) ?? previewMaxHFrac
-        case "preview_gap": previewGap = parseDouble(value) ?? previewGap
         case "dim_alpha": dimAlpha = parseDouble(value) ?? dimAlpha
         case "animation_ms": animationMs = parseDouble(value) ?? animationMs
+        case "expand_on_enter": expandOnEnter = parseBool(value) ?? expandOnEnter
+        case "hover_promotes": hoverPromotes = parseBool(value) ?? hoverPromotes
         case "apply_to": applyTo = ApplyTarget.parse(value) ?? applyTo
         case "fill_mode": fillMode = FillMode.parse(value) ?? fillMode
         case "thumb_max_px": thumbMaxPx = parseInt(value) ?? thumbMaxPx
@@ -209,26 +195,25 @@ public struct Config: Sendable, Equatable {
         case "wallpaper_dirs": return wallpaperDirs.joined(separator: ":")
         case "recursive": return boolString(recursive)
         case "sort": return sort.rawValue
+        case "design_width": return num(designWidth)
         case "slots": return String(slots)
-        case "tile_width": return num(tileWidth)
-        case "tile_height": return num(tileHeight)
-        case "collapsed_width_scale": return num(collapsedWidthScale)
-        case "tile_shear": return num(tileShear)
-        case "shear_mode": return shearMode.rawValue
-        case "overlap": return num(overlap)
-        case "depth_step": return num(depthStep)
-        case "perspective": return num(perspective)
-        case "scale_falloff": return num(scaleFalloff)
+        case "card_width": return num(cardWidth)
+        case "card_height": return num(cardHeight)
+        case "card_gap": return num(cardGap)
+        case "selected_card_height": return num(selectedCardHeight)
+        case "expanded_card_width": return num(expandedCardWidth)
+        case "expanded_card_height": return num(expandedCardHeight)
+        case "card_skew": return num(cardSkew)
+        case "card_corner_radius": return num(cardCornerRadius)
+        case "card_border_width": return num(cardBorderWidth)
+        case "card_border_color": return cardBorderColor
+        case "row_center_y_frac": return num(rowCenterYFrac)
         case "dim_falloff": return num(dimFalloff)
         case "dim_floor": return num(dimFloor)
-        case "expand_on_enter": return boolString(expandOnEnter)
-        case "hover_promotes": return boolString(hoverPromotes)
-        case "row_center_y_frac": return num(rowCenterYFrac)
-        case "preview_max_w_frac": return num(previewMaxWFrac)
-        case "preview_max_h_frac": return num(previewMaxHFrac)
-        case "preview_gap": return num(previewGap)
         case "dim_alpha": return num(dimAlpha)
         case "animation_ms": return num(animationMs)
+        case "expand_on_enter": return boolString(expandOnEnter)
+        case "hover_promotes": return boolString(hoverPromotes)
         case "apply_to": return applyTo.rawValue
         case "fill_mode": return fillMode.rawValue
         case "thumb_max_px": return String(thumbMaxPx)
@@ -242,7 +227,8 @@ public struct Config: Sendable, Equatable {
     public func serialized() -> String {
         var lines: [String] = []
         lines.append("# walle configuration")
-        lines.append("# Managed by: walle config set KEY VALUE   (or edit directly)")
+        lines.append("# Geometry is in design units for a 1920-wide screen and is scaled to")
+        lines.append("# the display automatically. Managed by: walle config set KEY VALUE")
         lines.append("")
         for key in Config.keyOrder {
             lines.append(key + " = " + (value(forKey: key) ?? ""))
@@ -264,7 +250,6 @@ public struct Config: Sendable, Equatable {
         try Data(serialized().utf8).write(to: url, options: .atomic)
     }
 
-    /// Validated for the picker: values that would produce nonsense geometry are clamped.
     public func sanitized() -> (config: Config, warnings: [String]) {
         var c = self
         var warnings: [String] = []
@@ -276,20 +261,19 @@ public struct Config: Sendable, Equatable {
         }
         if c.slots < 1 { warnings.append("slots must be >= 1, using 1"); c.slots = 1 }
         if c.slots % 2 == 0 { warnings.append("slots must be odd, using \(c.slots - 1)"); c.slots -= 1 }
-        clamp("tile_width", &c.tileWidth, 24, 2000)
-        clamp("tile_height", &c.tileHeight, 24, 2000)
-        clamp("collapsed_width_scale", &c.collapsedWidthScale, 0.05, 2)
-        clamp("tile_shear", &c.tileShear, -2, 2)
-        clamp("overlap", &c.overlap, 0, 0.9)
-        clamp("depth_step", &c.depthStep, 0, 10000)
-        clamp("perspective", &c.perspective, 1, 100000)
-        clamp("scale_falloff", &c.scaleFalloff, 0.05, 1.5)
+        clamp("design_width", &c.designWidth, 320, 20000)
+        clamp("card_width", &c.cardWidth, 8, 4000)
+        clamp("card_height", &c.cardHeight, 8, 4000)
+        clamp("card_gap", &c.cardGap, 0, 2000)
+        clamp("selected_card_height", &c.selectedCardHeight, 8, 4000)
+        clamp("expanded_card_width", &c.expandedCardWidth, 8, 8000)
+        clamp("expanded_card_height", &c.expandedCardHeight, 8, 8000)
+        clamp("card_skew", &c.cardSkew, -2, 2)
+        clamp("card_corner_radius", &c.cardCornerRadius, 0, 400)
+        clamp("card_border_width", &c.cardBorderWidth, 0, 40)
+        clamp("row_center_y_frac", &c.rowCenterYFrac, 0, 1)
         clamp("dim_falloff", &c.dimFalloff, 0, 1)
         clamp("dim_floor", &c.dimFloor, 0, 1)
-        clamp("row_center_y_frac", &c.rowCenterYFrac, 0, 1)
-        clamp("preview_max_w_frac", &c.previewMaxWFrac, 0.05, 1)
-        clamp("preview_max_h_frac", &c.previewMaxHFrac, 0.05, 1)
-        clamp("preview_gap", &c.previewGap, 0, 500)
         clamp("dim_alpha", &c.dimAlpha, 0, 1)
         clamp("animation_ms", &c.animationMs, 0, 5000)
         if c.thumbMaxPx < 16 { warnings.append("thumb_max_px too small, using 16"); c.thumbMaxPx = 16 }
@@ -308,9 +292,7 @@ private func parseBool(_ raw: String) -> Bool? {
 }
 
 private func boolString(_ value: Bool) -> String { value ? "true" : "false" }
-
 private func parseInt(_ raw: String) -> Int? { Int(raw) }
-
 private func parseDouble(_ raw: String) -> Double? { Double(raw) }
 
 private func num(_ value: Double) -> String {

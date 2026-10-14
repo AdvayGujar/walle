@@ -212,19 +212,18 @@ case "--dump-geometry":
     let height = value(of: "--height", in: rest).flatMap(Double.init) ?? 982
     let expanded = !rest.contains("--collapsed")
     let current = setter.currentWallpaperURL()?.path
-    let aspect = library.first?.aspectRatio ?? (config.tileWidth / config.tileHeight)
     let engine = LayoutEngine(config: config,
                               screen: ScreenMetrics(width: width, height: height),
                               expanded: expanded)
     let slots = engine.slots(count: library.count,
-                             focus: focusIndex(in: library, currentPath: current),
-                             centerAspect: aspect)
+                             focus: focusIndex(in: library, currentPath: current))
     print("expanded=\(expanded) slots=\(slots.count) screen=\(Int(width))x\(Int(height))")
     for slot in slots {
-        print(String(format: "  slot %d  offset %+d  index %d  zPos %7.1f  alpha %.2f  shear %+.2f  rect x=%7.1f y=%7.1f w=%6.1f h=%6.1f  top=%.1f",
+        print(String(format: "  slot %d  offset %+d  index %d  zPos %7.1f  alpha %.2f  midW %6.1f  h %6.1f  skew %+.2f  box x=%7.1f y=%6.1f w=%6.1f  centreX %7.1f",
                      slot.slot, slot.offset, slot.index, slot.zPosition, slot.alpha,
-                     slot.shear, slot.rect.minX, slot.rect.minY,
-                     slot.rect.width, slot.rect.height, slot.rect.maxY))
+                     slot.width, slot.height, slot.skew,
+                     slot.rect.minX, slot.rect.minY, slot.rect.width,
+                     slot.rect.midX))
     }
     exit(0)
 

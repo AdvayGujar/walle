@@ -1,23 +1,27 @@
 import CoreGraphics
 import Foundation
 
-/// Where one tile ends up on screen. Everything the renderer needs, and nothing it
-/// has to recompute; also everything the hit-tester needs.
+/// Where one card ends up. Everything the renderer needs, and everything the hit-tester
+/// needs, with no state and no AppKit.
 public struct SlotGeometry: Sendable, Equatable {
     public var slot: Int
     public var offset: Int
     public var index: Int
-    /// Final on-screen rectangle, before shear is applied.
+    /// Bounding box of the card shape. Wider than the mid-section width whenever the card
+    /// is skewed, because the lean pushes the top and bottom edges outwards.
     public var rect: CGRect
-    /// z translation used for depth ordering.
-    public var z: Double
+    /// Horizontal cross-section width at the vertical centre.
+    public var width: Double
+    public var height: Double
+    /// Horizontal shear. The top edge shifts by skew * height / 2, the bottom edge by the
+    /// negative of that.
+    public var skew: Double
+    public var alpha: Double
     /// Core Animation stacking order; higher is nearer the viewer.
     public var zPosition: Double
-    public var alpha: Double
-    /// Horizontal shear factor: x is displaced by shear * (y - rect.minY).
-    public var shear: Double
-    public var cornerRadius: Double
     public var isCenter: Bool
+    public var cornerRadius: Double
+    public var borderWidth: Double
 }
 
 public struct ScreenMetrics: Sendable, Equatable {
@@ -30,19 +34,15 @@ public struct ScreenMetrics: Sendable, Equatable {
     }
 }
 
-/// Pure geometry for the tile corridor. No AppKit, no Core Animation, no state: the
-/// whole visual design lives here and is exercised directly by the test suite.
+/// Pure geometry for the card row. Design units are multiplied by
+/// scale = screenWidth / designWidth, so the composition scales with the display.
 ///
-/// The row is always the configured number of slots wide: a centre tile with that many
-/// halved either side. Every tile sits one step further out than the last, where the
-/// step is the nearer tile's width times one minus overlap. With the default overlap of
-/// 0.5 each tile therefore covers exactly the inner half of the next one, so the overlap
-/// is identical at every step rather than piling up.
+/// Collapsed: every card is a skewed slice at a uniform pitch, and the selected card is
+/// taller than the rest. Expanded: the selected card becomes a flat rectangle and the
+/// neighbours sit half tucked behind it, stepped outward by one pitch.
 public struct LayoutEngine: Sendable {
     public var config: Config
     public var screen: ScreenMetrics
-    /// Expanded: the centre tile becomes the full rectangle preview and the rest of the
-    /// row is sized for that. Collapsed: every tile including the centre is a strip.
     public var expanded: Bool
 
     public init(config: Config, screen: ScreenMetrics, expanded: Bool) {
@@ -51,69 +51,30 @@ public struct LayoutEngine: Sendable {
         self.expanded = expanded
     }
 
+    public var scale: Double { screen.width / max(1, config.designWidth) }
     public var centerX: Double { screen.width / 2 }
     public var centerY: Double { screen.height * config.rowCenterYFrac }
 
-    /// Largest rectangle that fits the wallpaper aspect inside the preview budget.
-    public func previewSize(aspect: Double) -> CGSize {
-        let aspect = aspect > 0 ? aspect : config.tileWidth / config.tileHeight
-        let maxW = screen.width * config.previewMaxWFrac
-        let maxH = screen.height * config.previewMaxHFrac
-        var w = maxW
-        var h = w / aspect
-        if h > maxH {
-            h = maxH
-            w = h * aspect
-        }
-        return CGSize(width: w, height: h)
+    /// Centre-to-centre distance between neighbouring cards.
+    public var pitch: Double { (config.cardWidth + config.cardGap) * scale }
+
+    /// Bounding-box width of a skewed card.
+    public static func boundingWidth(midWidth: Double, height: Double, skew: Double) -> Double {
+        midWidth + abs(skew) * height
     }
 
-    /// Centre-to-centre pitch for tiles that do not overlap.
-    public var pitch: Double { config.tileWidth * (1 - config.overlap) }
-
-    /// Width of a strip tile. Collapsed strips are narrower, which is what makes the
-    /// resting row read as a tighter stack.
-    public var stripWidth: Double {
-        expanded ? config.tileWidth : config.tileWidth * config.collapsedWidthScale
-    }
-
-    /// Builds every visible slot. centerAspect is the aspect ratio (w/h) of the focused
-    /// wallpaper, used to size the centre rectangle.
-    public func slots(count: Int, focus: Int, centerAspect: Double) -> [SlotGeometry] {
+    public func slots(count: Int, focus: Int) -> [SlotGeometry] {
         let n = Queue.effectiveSlotCount(configured: config.slots, libraryCount: count)
         guard n > 0 else { return [] }
         let centerSlot = n / 2
-        let maxDistance = centerSlot
+        let s = scale
 
-        let preview = previewSize(aspect: centerAspect)
-        let centreWidth = expanded ? Double(preview.width) : stripWidth
-        let centreHeight = expanded ? Double(preview.height) : config.tileHeight
-
-        // Perspective-projected size of the tile at each distance from the centre.
-        var widths = [Double](repeating: 0, count: maxDistance + 1)
-        var heights = [Double](repeating: 0, count: maxDistance + 1)
-        widths[0] = centreWidth
-        heights[0] = centreHeight
-        var step = 1
-        while step <= maxDistance {
-            let falloff = pow(config.scaleFalloff, Double(step))
-            let z = -Double(step) * config.depthStep
-            let projection = max(0.0001, 1 - z / config.perspective)
-            widths[step] = stripWidth * falloff / projection
-            heights[step] = config.tileHeight * falloff / projection
-            step += 1
-        }
-
-        // Each step out is the nearer tile's width times one minus overlap, so a tile
-        // covers the same fraction of the next one everywhere in the row.
-        var centres = [Double](repeating: 0, count: maxDistance + 1)
-        step = 1
-        while step <= maxDistance {
-            centres[step] = centres[step - 1]
-                + widths[step - 1] * (1 - config.overlap)
-                + config.previewGap
-            step += 1
-        }
+        let stripWidth = config.cardWidth * s
+        let stripHeight = config.cardHeight * s
+        let tallHeight = config.selectedCardHeight * s
+        let wideWidth = config.expandedCardWidth * s
+        let wideHeight = config.expandedCardHeight * s
+        let step = pitch
 
         var result: [SlotGeometry] = []
         result.reserveCapacity(n)
@@ -124,64 +85,71 @@ public struct LayoutEngine: Sendable {
             let distance = abs(d)
             let sign: Double = d > 0 ? 1 : (d < 0 ? -1 : 0)
             let isCentre = d == 0
-            let width = widths[distance]
-            let height = heights[distance]
-            let x = centerX + sign * centres[distance]
 
-            // The centre only straightens up when it is actually showing the preview.
-            // While the row is resting it leans with everything else.
-            let shear = isCentre && expanded ? 0 : shearValue(forOffset: d)
+            let width: Double
+            let height: Double
+            let skew: Double
+            let offsetX: Double
 
-            let z = isCentre ? 0 : -Double(distance) * config.depthStep
+            if isCentre {
+                width = expanded ? wideWidth : stripWidth
+                height = expanded ? wideHeight : tallHeight
+                skew = expanded ? 0 : config.cardSkew
+                offsetX = 0
+            } else {
+                width = stripWidth
+                height = stripHeight
+                skew = config.cardSkew
+                // Expanded: the first neighbour is half tucked behind the rectangle, so
+                // its centre sits on the rectangle edge. The rest step by one pitch.
+                let inner = expanded ? wideWidth / 2 : step
+                offsetX = sign * (inner + Double(distance - 1) * step)
+            }
+
+            let boxWidth = LayoutEngine.boundingWidth(midWidth: width, height: height, skew: skew)
+            let centre = CGPoint(x: centerX + offsetX, y: centerY)
+            let rect = CGRect(x: centre.x - boxWidth / 2, y: centre.y - height / 2,
+                              width: boxWidth, height: height)
+
             result.append(SlotGeometry(
-                slot: slot, offset: d, index: libraryIndex,
-                rect: CGRect(x: x - width / 2, y: centerY - height / 2,
-                             width: width, height: height),
-                z: z,
-                zPosition: isCentre ? 1000 : 500 - Double(distance),
+                slot: slot, offset: d, index: libraryIndex, rect: rect,
+                width: width, height: height, skew: skew,
                 alpha: isCentre ? 1
                     : max(config.dimFloor, 1 - config.dimFalloff * Double(distance)),
-                shear: shear,
-                cornerRadius: isCentre && expanded ? 12 : 9,
-                isCenter: isCentre))
+                zPosition: isCentre ? 1000 : 500 - Double(distance),
+                isCenter: isCentre,
+                cornerRadius: config.cardCornerRadius * s,
+                borderWidth: config.cardBorderWidth * s))
         }
         return result
     }
 
-    /// All tiles lean the same way in uniform mode; in mirror mode they lean toward the
-    /// centre like a fan.
-    public func shearValue(forOffset d: Int) -> Double {
-        switch config.shearMode {
-        case .uniform:
-            return config.tileShear
-        case .mirror:
-            return d > 0 ? -config.tileShear : config.tileShear
-        }
-    }
-
-    /// True when the point is inside the sheared tile silhouette.
+    /// True when the point is inside the card silhouette. The lean passes through zero at
+    /// the vertical centre, so undoing it means subtracting the interpolated shift.
     public static func contains(_ point: CGPoint, in slot: SlotGeometry) -> Bool {
         let r = slot.rect
         guard point.y >= r.minY, point.y <= r.maxY else { return false }
-        let displacement = slot.shear * Double(point.y - r.minY)
-        let unshearedX = Double(point.x) - displacement
-        return unshearedX >= Double(r.minX) && unshearedX <= Double(r.maxX)
+        guard r.height > 0 else { return false }
+        let t = Double(point.y - r.minY) / Double(r.height)
+        let shift = slot.skew * slot.height * (t - 0.5)
+        let unshearedX = Double(point.x) - shift
+        let midX = Double(r.midX)
+        let half = slot.width / 2
+        return unshearedX >= midX - half && unshearedX <= midX + half
     }
 
     /// Which library index is under the point, or nil for the backdrop.
-    /// Nearest to the viewer wins, which mirrors what is visually on top.
     public func hitTest(_ point: CGPoint, slots: [SlotGeometry]) -> Int? {
-        let ordered = slots.sorted { $0.zPosition > $1.zPosition }
-        for slot in ordered where LayoutEngine.contains(point, in: slot) {
+        for slot in slots.sorted(by: { $0.zPosition > $1.zPosition })
+        where LayoutEngine.contains(point, in: slot) {
             return slot.index
         }
         return nil
     }
 
-    /// The slot under the point, or nil.
     public func hitTestSlot(_ point: CGPoint, slots: [SlotGeometry]) -> SlotGeometry? {
-        let ordered = slots.sorted { $0.zPosition > $1.zPosition }
-        for slot in ordered where LayoutEngine.contains(point, in: slot) {
+        for slot in slots.sorted(by: { $0.zPosition > $1.zPosition })
+        where LayoutEngine.contains(point, in: slot) {
             return slot
         }
         return nil
