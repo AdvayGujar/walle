@@ -194,8 +194,7 @@ public struct CLI {
                                        shortAliases: ["j": "json", "h": "help"]))
             if pickOptions.has("help") { return help(environment) }
             return try runPicker([], environment)
-        case "doctor":
-            throw CLIError("'doctor' is not implemented yet")
+        case "doctor": return try doctor(rest, environment: environment)
         default:
             throw CLIError("unknown command '\(command)'", showUsage: true)
         }
@@ -625,6 +624,107 @@ public struct CLI {
         var pickerArguments = ["--current"]
         if options.has("json") { pickerArguments.append("--json") }
         return try runPicker(pickerArguments, environment)
+    }
+
+    // MARK: - doctor
+
+    /// Checks the whole chain: config, library, picker binary, thumbnail cache, history and
+    /// the hotkey. Everything it reports is something that has actually gone wrong for
+    /// someone at least once.
+    static func doctor(_ tokens: [String], environment: CLIEnvironment) throws -> Int32 {
+        let options = try OptionParser.parse(
+            tokens, spec: OptionSpec(boolOptions: ["json"],
+                                     shortAliases: ["j": "json", "h": "help"]))
+        if options.has("help") { return help(environment) }
+
+        let fm = FileManager.default
+        var checks: [(name: String, ok: Bool, detail: String)] = []
+
+        // Config
+        let configPath = environment.paths.configFile.path
+        let configExists = fm.fileExists(atPath: configPath)
+        let (config, configWarnings) = loadConfig(environment)
+        checks.append(("config file", true,
+                       configExists ? configPath : configPath + " (absent, defaults in use)"))
+        for warning in configWarnings { checks.append(("config warning", false, warning)) }
+
+        // Library
+        checks.append(("wallpaper dirs", !config.wallpaperDirs.isEmpty,
+                       config.wallpaperDirs.joined(separator: ", ")))
+        let scan = LibraryScanner(config: config, home: environment.paths.home).scan()
+        checks.append(("wallpapers", !scan.wallpapers.isEmpty,
+                       String(scan.wallpapers.count) + " image"
+                       + (scan.wallpapers.count == 1 ? "" : "s")))
+        for warning in scan.warnings { checks.append(("library warning", false, warning)) }
+
+        // The binary everything with a window is delegated to.
+        if let picker = PickerLocator.locate(environment: environment.environment) {
+            checks.append(("walle-picker", true, picker.path))
+        } else {
+            checks.append(("walle-picker", false,
+                           "not found; set WALLE_PICKER or run ./scripts/install.sh"))
+        }
+
+        // Thumbnail cache
+        let cache = ThumbnailCache(directory: environment.paths.thumbnailsDir,
+                                   rowMaxPx: config.thumbMaxPx,
+                                   previewMaxPx: config.previewMaxPx)
+        let cacheBytes = cache.cacheSizeBytes()
+        checks.append(("thumbnail cache", cacheBytes > 0,
+                       String(cacheBytes) + " bytes in " + environment.paths.thumbnailsDir.path
+                       + (cacheBytes > 0 ? "" : " (run walle cache)")))
+
+        // History and state
+        let historyURL = environment.paths.historyFile
+        let entries = (try? HistoryStore(fileURL: historyURL).entries(limit: 1)) ?? []
+        checks.append(("history", true,
+                       entries.isEmpty ? "empty (" + historyURL.path + ")"
+                                       : "latest " + entries[0].path))
+
+        // Hotkey daemon
+        let skhdCandidates = ["/opt/homebrew/bin/skhd", "/usr/local/bin/skhd"]
+        if let skhd = skhdCandidates.first(where: { fm.isExecutableFile(atPath: $0) }) {
+            checks.append(("skhd installed", true, skhd))
+        } else {
+            checks.append(("skhd installed", false,
+                           "not found; brew install koekeishiya/formulae/skhd"))
+        }
+
+        let rcPath = environment.paths.home.appendingPathComponent(".config/skhd/skhdrc").path
+        if let data = fm.contents(atPath: rcPath),
+           let text = String(data: data, encoding: .utf8) {
+            let bound = text.split(separator: "\n").contains { line in
+                let trimmed = line.trimmingCharacters(in: .whitespaces)
+                return !trimmed.hasPrefix("#") && trimmed.contains("walle")
+            }
+            checks.append(("skhd binding", bound,
+                           bound ? "found in " + rcPath : "no line mentioning walle in " + rcPath))
+        } else {
+            checks.append(("skhd binding", false, "no " + rcPath))
+        }
+
+        // Accessibility cannot be checked from here: it is granted to skhd, not to us.
+        checks.append(("skhd accessibility", true,
+                       "cannot be checked from here; grant it in System Settings > "
+                       + "Privacy & Security > Accessibility if the hotkey does nothing"))
+
+        let failures = checks.filter { !$0.ok }.count
+        if options.has("json") {
+            try emitJSON([
+                "ok": failures == 0,
+                "failures": failures,
+                "checks": checks.map { ["name": $0.name, "ok": $0.ok, "detail": $0.detail] },
+            ], to: environment)
+        } else {
+            for check in checks {
+                environment.output.out((check.ok ? "  ok  " : " fail ") + check.name
+                                       + "  " + check.detail)
+            }
+            environment.output.out(failures == 0
+                ? "all checks passed"
+                : String(failures) + " check" + (failures == 1 ? "" : "s") + " failed")
+        }
+        return failures == 0 ? CLIExit.success.rawValue : CLIExit.failure.rawValue
     }
 
     // MARK: - history
