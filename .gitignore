@@ -1,0 +1,9 @@
+# build output
+.build/
+dist/
+
+# local-only scaffolding, deliberately not part of the project
+plan.md
+
+# macOS
+.DS_Store
