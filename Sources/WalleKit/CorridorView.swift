@@ -28,6 +28,9 @@ public final class CorridorView: NSView {
     private var screenMetrics: ScreenMetrics
     private var provider: ThumbnailProvider
     private var currentPath: String?
+    /// Diagnostic mode: fills each slot with a distinct flat colour so the compositing
+    /// order in an overlap can be read straight off a rendered snapshot.
+    private let debugColours: Bool
 
     private var library: [Wallpaper] = []
     private var focus: Int = 0
@@ -37,7 +40,9 @@ public final class CorridorView: NSView {
     private let backdrop = CALayer()
 
     public init(frame: NSRect, config: Config, provider: ThumbnailProvider,
-                currentPath: String?, expanded: Bool = true) {
+                currentPath: String?, expanded: Bool = true,
+                debugColours: Bool = false) {
+        self.debugColours = debugColours
         self.config = config
         self.screenMetrics = ScreenMetrics(width: Double(frame.width),
                                            height: Double(frame.height))
@@ -76,6 +81,27 @@ public final class CorridorView: NSView {
         rebuildTiles(reloadContents: false)
     }
 
+    /// Palette used only by the colour-coded diagnostic render, ordered by slot so the
+    /// same letter always means the same position in the row.
+    static let debugPalette: [(name: String, red: Double, green: Double, blue: Double)] = [
+        ("R", 1, 0, 0), ("G", 0, 1, 0), ("B", 0, 0, 1), ("Y", 1, 1, 0),
+        ("M", 1, 0, 1), ("C", 0, 1, 1), ("O", 1, 0.5, 0), ("P", 0.5, 0, 1),
+        ("W", 1, 1, 1),
+    ]
+
+    static func solidImage(forSlot slot: Int) -> CGImage? {
+        let entry = debugPalette[slot % debugPalette.count]
+        guard let space = CGColorSpace(name: CGColorSpace.sRGB),
+              let context = CGContext(data: nil, width: 4, height: 4, bitsPerComponent: 8,
+                                      bytesPerRow: 0, space: space,
+                                      bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)
+        else { return nil }
+        context.setFillColor(CGColor(srgbRed: entry.red, green: entry.green,
+                                     blue: entry.blue, alpha: 1))
+        context.fill(CGRect(x: 0, y: 0, width: 4, height: 4))
+        return context.makeImage()
+    }
+
     private var centerAspect: Double {
         guard !library.isEmpty else { return config.tileWidth / config.tileHeight }
         let index = Queue.wrapIndex(focus, count: library.count)
@@ -103,6 +129,9 @@ public final class CorridorView: NSView {
                 let image = provider.image(for: wallpaper, sizeClass: wanted)
                 tile.setWallpaper(wallpaper, contents: image, sizeClass: wanted)
             }
+            if debugColours {
+                tile.setContents(CorridorView.solidImage(forSlot: index))
+            }
             tile.apply(slot)
             tile.isHidden = false
             tile.setAccent(wallpaper.path == currentPath, color: NSColor.controlAccentColor.cgColor)
@@ -110,6 +139,20 @@ public final class CorridorView: NSView {
 
         for index in slots.count..<tiles.count {
             tiles[index].isHidden = true
+        }
+
+        // The on-screen compositor sorts siblings by zPosition, but CALayer.render(in:)
+        // -- which --snapshot uses -- paints them in sublayer order. Relying on zPosition
+        // therefore produced a snapshot where far tiles covered near ones. Re-inserting
+        // the tiles back-to-front makes the paint order explicit and identical in both
+        // paths, so what is verified offscreen is what appears on screen.
+        let paintOrder = slots.indices
+            .map { index -> (tile: TileLayer, depth: Double) in
+                (tiles[index], slots[index].zPosition)
+            }
+            .sorted { $0.depth < $1.depth }
+        for entry in paintOrder {
+            layer?.addSublayer(entry.tile)
         }
     }
 

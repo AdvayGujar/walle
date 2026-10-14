@@ -152,6 +152,7 @@ case "--snapshot":
     let width = value(of: "--width", in: rest).flatMap(Double.init) ?? 1512
     let height = value(of: "--height", in: rest).flatMap(Double.init) ?? 982
     let collapsed = rest.contains("--collapsed")
+    let debugColours = rest.contains("--debug-tiles")
 
     let library = loadLibrary()
     guard !library.isEmpty else {
@@ -163,7 +164,8 @@ case "--snapshot":
                             config: config,
                             provider: makeProvider(),
                             currentPath: current,
-                            expanded: !collapsed)
+                            expanded: !collapsed,
+                            debugColours: debugColours)
     view.reload(library: library, focus: focusIndex(in: library, currentPath: current))
     do {
         try view.snapshot(to: url)
@@ -201,6 +203,28 @@ case "--selftest":
         print("history:      " + paths.historyFile.path)
         print("thumbnails:   " + paths.thumbnailsDir.path)
         print("library dirs: " + config.wallpaperDirs.joined(separator: ", "))
+    }
+    exit(0)
+
+case "--dump-geometry":
+    let library = loadLibrary()
+    let width = value(of: "--width", in: rest).flatMap(Double.init) ?? 1512
+    let height = value(of: "--height", in: rest).flatMap(Double.init) ?? 982
+    let expanded = !rest.contains("--collapsed")
+    let current = setter.currentWallpaperURL()?.path
+    let aspect = library.first?.aspectRatio ?? (config.tileWidth / config.tileHeight)
+    let engine = LayoutEngine(config: config,
+                              screen: ScreenMetrics(width: width, height: height),
+                              expanded: expanded)
+    let slots = engine.slots(count: library.count,
+                             focus: focusIndex(in: library, currentPath: current),
+                             centerAspect: aspect)
+    print("expanded=\(expanded) slots=\(slots.count) screen=\(Int(width))x\(Int(height))")
+    for slot in slots {
+        print(String(format: "  slot %d  offset %+d  index %d  zPos %7.1f  alpha %.2f  shear %+.2f  rect x=%7.1f y=%7.1f w=%6.1f h=%6.1f  top=%.1f",
+                     slot.slot, slot.offset, slot.index, slot.zPosition, slot.alpha,
+                     slot.shear, slot.rect.minX, slot.rect.minY,
+                     slot.rect.width, slot.rect.height, slot.rect.maxY))
     }
     exit(0)
 
