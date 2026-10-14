@@ -68,7 +68,7 @@ public struct Config: Sendable, Equatable {
     public var logLevel: String
 
     public init(
-        wallpaperDirs: [String] = ["~/Pictures/Wallpapers"],
+        wallpaperDirs: [String] = ["~/Downloads/wallpaper"],
         recursive: Bool = true,
         sort: SortMode = .name,
         slots: Int = 9,

@@ -33,8 +33,8 @@ Each module ends with a verification step and a stop for your approval.
 | # | Module | Verification | Status |
 | --- | --- | --- | --- |
 | M1 | Scaffold, Paths, Config, Queue, Layout | `swift test` on config/queue/layout units | **done** — 34 tests, 3 suites green |
-| M2 | Library scan + thumbnail cache | `walle list`, `walle cache` against a real wallpaper dir | not started |
-| M3 | History/state + setter + CLI | `walle dir add/list`, `walle set` changes the desktop | not started |
+| M2 | Library scan + thumbnail cache | `walle list`, `walle cache` against a real wallpaper dir | **done** — 64 tests; scanner sort bug fixed |
+| M3 | History/state + setter + CLI | `walle dir add/list`, `walle set` changes the desktop | in progress — `list`, `dir`, `config` shipped; `set`/`cache`/`history`/`doctor` pending |
 | M4 | Picker window + static tile corridor | `walle pick` shows parallelograms, no input yet | not started |
 | M5 | Hover fly-to-centre, rectangle preview, input | interactive: hover, click, arrows, Esc | not started |
 | M6 | Perf pass + install scripts + doctor + docs | cold start < 120 ms, RSS < 50 MB, `walle doctor` | not started |
@@ -72,6 +72,14 @@ Key geometry decisions encoded in `Layout.swift`:
   1600 px (centre preview).
 - All disk I/O via URL/FileManager; dedupe by canonical path and visited inode.
 - Swift 6 language mode, @MainActor on AppKit types, Sendable actors for background work.
+
+## Confirmed decisions
+
+- **Library directory: ~/Downloads/wallpaper** (confirmed by you). It currently holds
+  5 wallpapers: 3 PNG (7.8 MB, 2.4 MB, 15.0 MB) and 2 JPG (8.9 MB, 2.9 MB). Two are
+  near-duplicate names: a_street_with_buildings_and_signs.png and
+  a_street_with_buildings_and_signs_vjti.png. These are big files, so the thumbnail
+  cache is doing real work rather than being ceremony.
 
 ## Running log
 
