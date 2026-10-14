@@ -416,9 +416,12 @@ If memory matters more than rotation smoothness, `preview_max_px` can be lowered
 ## Troubleshooting
 
 **The picker opens but the keyboard does nothing.**
-The window must be the key window of the active application. walle asks for focus on launch,
-but if another app steals it back, click once on the overlay and keys will work. This is
-also what happens if the process is launched by something that does not grant activation.
+
+Different problem from the two above: skhd is working and walle is running, but the window is
+not the key window. It must be key for the application to receive keystrokes, and walle asks
+for focus on launch. If another app steals focus back, click once on the overlay and the keys
+will start working. This is also what happens when walle is launched by something that does
+not grant activation.
 
 **The hotkey does nothing, and `skhd --reload` says "could not locate existing instance".**
 
@@ -457,13 +460,6 @@ signals the first to close. Keep exactly one line:
     skhd --reload
 
 `walle doctor` reports duplicate bindings rather than just checking that one exists.
-
-**The picker opens but the keyboard does nothing.**
-
-Different problem from the above: skhd is working and walle is running, but the window is not
-the key window. The window must be key for the application to receive keystrokes, and walle
-asks for focus on launch. If another app steals it back, click once on the overlay and the
-keys will start working.
 
 **History is empty.**
 walle writes history to `~/Library/Application Support/walle` only after the wallpaper has
