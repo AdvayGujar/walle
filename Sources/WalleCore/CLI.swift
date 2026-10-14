@@ -225,49 +225,76 @@ public struct CLI {
 
     static func help(_ environment: CLIEnvironment) -> Int32 {
         environment.output.out("""
-        walle \(version) - a lightweight wallpaper switcher for macOS
+        walle \(version) - a keyboard-driven wallpaper switcher for macOS
 
         USAGE
+          walle                      Open the picker
           walle <command> [options]
 
-        COMMANDS
-          pick                       Open the picker (this is what a bare "walle" runs)
-          next, prev, random         Apply the next, previous or a random wallpaper
-          add <path>                 Add a wallpaper directory      (short for dir add)
-          remove <path>              Remove a wallpaper directory   (short for dir remove)
-          use <path>                 Replace the directory list     (short for dir use)
-          dirs                       Show wallpaper directories     (short for dir list)
-          list                       List wallpapers in the configured directories
-          set <path>                 Apply a wallpaper
-          set --random|--next|--prev|--last
-                                     Apply a wallpaper chosen from the library
+        PICKER
+          pick                       Open the picker. A bare "walle" does the same.
+
+        CHOOSING A WALLPAPER
+          set <path>                 Apply one specific file
+          set --last                 Re-apply the most recent one that still exists
+          next                       Apply the next wallpaper in the library
+          prev                       Apply the previous one
+          random                     Apply a random one
           current                    Print the current desktop wallpaper
+          Any of these accepts --dry-run to show what would be applied without
+          applying it, and --json for machine readable output.
+
+        THE LIBRARY
+          list                       List the wallpapers that were found
+          dirs                       Show the configured directories and their counts
+          add <path>                 Add a directory (created if it does not exist)
+          remove <path>              Remove a directory from the list
+          use <path>                 Replace the whole list with a single directory
+          dir list|add|remove|use    The same four commands, spelled out
+
+        THUMBNAIL CACHE
+          cache                      Build the cache (recommended before first use)
+          cache --prune              Also drop entries whose source file is gone
+          cache --rebuild            Throw the cache away and build it again
+
+        HISTORY
           history                    Show recently applied wallpapers
-          cache                      Build the thumbnail cache
-          dir list                   Show wallpaper directories and their image counts
-          dir add <path>             Add a wallpaper directory
-          dir remove <path>          Remove a wallpaper directory
-          dir use <path>             Replace the directory list with one path
-          config path                Print the config file location
+          history --limit <n>        Only the n most recent entries
+          history --clear            Forget everything
+
+        CONFIGURATION
           config list                Print every setting
           config get <key>           Print one setting
           config set <key> <value>   Change one setting
           config unset <key>         Restore one setting to its default
-          config edit                Open the config file in $EDITOR
+          config path                Print the config file location
+          config edit                Open it in $EDITOR
+
+        DIAGNOSTICS
+          doctor                     Check config, library, picker binary, cache
+                                     and the hotkey setup
           help                       Show this help
           version                    Show the version
 
         OPTIONS
-          --json            Machine readable output where supported
-          --limit <n>       list: stop after n wallpapers
-          --sort <mode>     list: name | mtime | random
-          --dir <path>      list: scan this path instead of the configured ones
-          -h, --help        Show this help
+          --json                     Machine readable output where supported
+          --dry-run                  Show what would happen, change nothing
+          --limit <n>                list, history: stop after n entries
+          --sort <name|mtime|random> list: ordering
+          --dir <path>               list: scan this path instead of the configured ones
+          -h, --help                 Show this help
+
+        KEYBOARD, WHILE THE PICKER IS OPEN
+          left / right (up / down)   Move between wallpapers, wrapping both ways
+          space                      Expand the centred card into the preview,
+                                     or collapse it again
+          enter                      Apply the centred wallpaper and close
+          escape                     Close without changing anything
 
         EXIT CODES
-          0 success   1 error   2 dismissed   3 already running
+          0 applied   1 error   2 dismissed   3 already running
 
-        CONFIG
+        CONFIG FILE
           \(environment.paths.configFile.path)
         """)
         return CLIExit.success.rawValue
