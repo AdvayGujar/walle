@@ -130,7 +130,7 @@ public final class CorridorView: NSView {
     }
 
     public override func mouseEntered(with event: NSEvent) {
-        setTransition(1, animated: true)
+        evaluateHover(event)
     }
 
     public override func mouseExited(with event: NSEvent) {
@@ -138,19 +138,37 @@ public final class CorridorView: NSView {
         setTransition(0, animated: true)
     }
 
-    /// Hovering a side card promotes it to the centre. The gate is what stops the row
-    /// chasing its own rotation: after a promotion the card is under the pointer, so
-    /// hit-testing returns the focused index and nothing further happens.
     public override func mouseMoved(with event: NSEvent) {
-        setTransition(1, animated: true)
-        guard config.hoverPromotes, !library.isEmpty else { return }
+        evaluateHover(event)
+    }
+
+    /// Only the cards react to the pointer.
+    ///
+    /// Over a card the row expands, and if a different card is under the pointer it is
+    /// promoted to the centre. Over anything else the row returns to its resting
+    /// collapsed state. Without that final case the window, which covers the whole screen,
+    /// would latch open on launch and the resting state would never be seen.
+    ///
+    /// The gate is what stops the row chasing its own rotation: after a promotion the
+    /// promoted card is under the pointer, so the next hit test returns the focused index
+    /// and nothing further happens.
+    private func evaluateHover(_ event: NSEvent) {
+        guard !library.isEmpty else { return }
         let point = convert(event.locationInWindow, from: nil)
-        guard hoverGate.shouldPromote(point: point, time: CACurrentMediaTime()) else { return }
         let engine = LayoutEngine(config: config, screen: screenMetrics, transition: transition)
-        guard let slot = engine.hitTestSlot(point, slots: currentSlots),
-              slot.index != focus else { return }
-        focus = Queue.wrapIndex(slot.index, count: library.count)
-        rebuildCards(reloadContents: false)
+
+        guard let slot = engine.hitTestSlot(point, slots: currentSlots) else {
+            if transition > 0 { setTransition(0, animated: true) }
+            return
+        }
+
+        if config.hoverPromotes,
+           slot.index != focus,
+           hoverGate.shouldPromote(point: point, time: CACurrentMediaTime()) {
+            focus = Queue.wrapIndex(slot.index, count: library.count)
+            rebuildCards(reloadContents: false)
+        }
+        if transition < 1 { setTransition(1, animated: true) }
     }
 
     /// Rotates the row by one card. Wraps forever in both directions.

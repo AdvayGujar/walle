@@ -55,8 +55,7 @@ public final class PickerController: NSObject, NSApplicationDelegate {
         view.reload(library: library, focus: focusIndex)
 
         let setter = NSWorkspaceSetter()
-        let history = HistoryStore(fileURL: paths.historyFile)
-        let stateStore = StateStore(fileURL: paths.stateFile)
+        let applyPaths = paths
         let applyTo = config.applyTo
         let fillMode = config.fillMode
 
@@ -69,12 +68,13 @@ public final class PickerController: NSObject, NSApplicationDelegate {
                     Data(("walle-picker: " + String(describing: error) + "\n").utf8))
                 exit(1)
             }
-            // History is written only after the desktop actually changed.
-            try? history.append(HistoryEntry(path: wallpaper.path, appliedAt: Date(),
-                                             screenUUID: nil, mode: "picker"))
-            var state = stateStore.load()
-            state.lastAppliedPath = wallpaper.path
-            try? stateStore.save(state)
+            // Recording happens only after the desktop actually changed, and a failure
+            // here is reported rather than swallowed.
+            for warning in walleRecordApplied(path: wallpaper.path, paths: applyPaths,
+                                              mode: "picker") {
+                FileHandle.standardError.write(
+                    Data(("walle-picker: warning: " + warning + "\n").utf8))
+            }
             exit(0)
         }
         view.onDismiss = { exit(2) }

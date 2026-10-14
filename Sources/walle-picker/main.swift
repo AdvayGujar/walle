@@ -139,14 +139,11 @@ case "--apply":
         exit(1)
     }
 
-    // History is recorded only after the desktop actually changed.
-    let history = HistoryStore(fileURL: paths.historyFile)
-    try? history.append(HistoryEntry(path: url.path, appliedAt: Date(),
-                                     screenUUID: nil, mode: "cli"))
-    let stateStore = StateStore(fileURL: paths.stateFile)
-    var state = stateStore.load()
-    state.lastAppliedPath = url.path
-    try? stateStore.save(state)
+    // Recording happens only after the desktop actually changed, and a failure here is
+    // reported rather than swallowed.
+    for warning in walleRecordApplied(path: url.path, paths: paths, mode: "cli") {
+        writeError("warning: " + warning)
+    }
 
     if wantsJSON(rest) {
         emit(["applied": url.path,
