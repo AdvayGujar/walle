@@ -81,7 +81,7 @@ public struct Config: Sendable, Equatable {
         cardBorderWidth: Double = 3,
         cardBorderColor: String = "FF9F0A",
         rowCenterYFrac: Double = 0.5,
-        dimFalloff: Double = 0.18,
+        dimFalloff: Double = 0,
         dimFloor: Double = 0.35,
         dimAlpha: Double = 0.35,
         expandedNeighbourAlpha: Double = 0.06,
