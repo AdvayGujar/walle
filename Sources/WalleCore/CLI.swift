@@ -177,8 +177,14 @@ public struct CLI {
         case "current": return try current(rest, environment: environment)
         case "history": return try history(rest, environment: environment)
         case "cache": return try cache(rest, environment: environment)
-        case "pick", "doctor":
-            throw CLIError("'\(command)' is not implemented yet")
+        case "pick":
+            let pickOptions = try OptionParser.parse(
+                rest, spec: OptionSpec(boolOptions: ["json"],
+                                       shortAliases: ["j": "json", "h": "help"]))
+            if pickOptions.has("help") { return help(environment) }
+            return try runPicker([], environment)
+        case "doctor":
+            throw CLIError("'doctor' is not implemented yet")
         default:
             throw CLIError("unknown command '\(command)'", showUsage: true)
         }

@@ -4,10 +4,8 @@ import WalleCore
 import WalleKit
 
 // walle-picker is the only part of walle that links AppKit and talks to the window
-// server. M3 ships its headless modes; the interactive picker arrives in M4.
-//
-// The walle CLI never links AppKit. When it needs to change the desktop it execs this
-// binary, which costs one exec rather than loading AppKit into the CLI as well.
+// server. The walle CLI never links AppKit: when it needs to change the desktop or read
+// the current wallpaper it execs this binary.
 
 let arguments = Array(CommandLine.arguments.dropFirst())
 
@@ -29,16 +27,24 @@ func wantsJSON(_ tokens: [String]) -> Bool {
     tokens.contains("--json") || tokens.contains("-j")
 }
 
+func value(of flag: String, in tokens: [String]) -> String? {
+    guard let index = tokens.firstIndex(of: flag), index + 1 < tokens.count else { return nil }
+    return tokens[index + 1]
+}
+
 let usageText = """
 walle-picker - the macOS half of walle
 
 Normally launched for you by the walle CLI:
   walle pick                open the picker
   walle set <path>          apply a wallpaper
+  walle current             print the current wallpaper
 
 HEADLESS MODES
   --apply <path> [--json]   apply a wallpaper and exit
   --current [--json]        print the current desktop wallpaper
+  --snapshot <file>         render the corridor to a PNG and exit
+                            [--width n] [--height n] [--collapsed]
   --selftest [--json]       report what this environment can do
   --help                    show this message
 """
@@ -51,6 +57,26 @@ for warning in configWarnings + configSanitizeWarnings {
 }
 
 let setter = NSWorkspaceSetter()
+
+func makeProvider() -> ThumbnailProvider {
+    ThumbnailProvider(
+        cache: ThumbnailCache(directory: paths.thumbnailsDir,
+                              rowMaxPx: config.thumbMaxPx,
+                              previewMaxPx: config.previewMaxPx),
+        rowMaxPx: config.thumbMaxPx,
+        previewMaxPx: config.previewMaxPx)
+}
+
+func loadLibrary() -> [Wallpaper] {
+    let scan = LibraryScanner(config: config, home: paths.home).scan()
+    for warning in scan.warnings { writeError("warning: " + warning) }
+    return scan.wallpapers
+}
+
+func focusIndex(in library: [Wallpaper], currentPath: String?) -> Int {
+    guard let currentPath else { return 0 }
+    return library.firstIndex { $0.path == currentPath } ?? 0
+}
 
 func currentWallpaperJSON() -> [String: Any] {
     var object: [String: Any] = ["screenCount": NSScreen.screens.count]
@@ -67,13 +93,13 @@ func currentWallpaperJSON() -> [String: Any] {
     return object
 }
 
-if arguments.isEmpty || arguments.contains("--help") || arguments.contains("-h") {
+if arguments.contains("--help") || arguments.contains("-h") {
     print(usageText)
     exit(0)
 }
 
-let command = arguments[0]
-let rest = Array(arguments.dropFirst())
+let command = arguments.first ?? "--pick"
+let rest = arguments.isEmpty ? [] : Array(arguments.dropFirst())
 
 switch command {
 case "--current":
@@ -120,6 +146,34 @@ case "--apply":
     }
     exit(0)
 
+case "--snapshot":
+    let output = rest.first { !$0.hasPrefix("-") } ?? "walle-snapshot.png"
+    let url = walleExpand(output, home: paths.home).standardizedFileURL
+    let width = value(of: "--width", in: rest).flatMap(Double.init) ?? 1512
+    let height = value(of: "--height", in: rest).flatMap(Double.init) ?? 982
+    let collapsed = rest.contains("--collapsed")
+
+    let library = loadLibrary()
+    guard !library.isEmpty else {
+        writeError("no wallpapers found; run walle list to check the library")
+        exit(1)
+    }
+    let current = setter.currentWallpaperURL()?.path
+    let view = CorridorView(frame: CGRect(x: 0, y: 0, width: width, height: height),
+                            config: config,
+                            provider: makeProvider(),
+                            currentPath: current,
+                            expanded: !collapsed)
+    view.reload(library: library, focus: focusIndex(in: library, currentPath: current))
+    do {
+        try view.snapshot(to: url)
+    } catch {
+        writeError(String(describing: error))
+        exit(1)
+    }
+    print(url.path)
+    exit(0)
+
 case "--selftest":
     let started = Date()
     let cache = ThumbnailCache(directory: paths.thumbnailsDir,
@@ -149,6 +203,22 @@ case "--selftest":
         print("library dirs: " + config.wallpaperDirs.joined(separator: ", "))
     }
     exit(0)
+
+case "--pick":
+    let library = loadLibrary()
+    guard !library.isEmpty else {
+        writeError("no wallpapers found in " + config.wallpaperDirs.joined(separator: ", "))
+        exit(2)
+    }
+    let current = setter.currentWallpaperURL()?.path
+    // M4 opens expanded so the centred preview is visible; M5 adds collapse-on-open
+    // and expand-on-pointer-entry using config.expandOnEnter.
+    PickerApp.run(config: config,
+                  paths: paths,
+                  library: library,
+                  focusIndex: focusIndex(in: library, currentPath: current),
+                  currentPath: current,
+                  startsExpanded: true)
 
 default:
     print(usageText)
