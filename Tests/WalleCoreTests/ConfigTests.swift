@@ -72,45 +72,64 @@ struct ConfigTests {
         #expect(tinyWarnings.contains { $0.contains("slots must be >= 1") })
     }
 
-    @Test func sanitizedClampsOverlapAndPerspective() {
+    @Test func sanitizedClampsNewGeometryKeys() {
         var config = Config()
-        config.overlap = 1.5
-        config.perspective = 0
-        var (sanitized, warnings) = config.sanitized()
-        #expect(sanitized.overlap == 0.9)
-        #expect(sanitized.perspective == 1)
-        #expect(warnings.contains { $0.contains("overlap") })
-        #expect(warnings.contains { $0.contains("perspective") })
+        config.designWidth = 10
+        config.cardGap = -5
+        config.cardSkew = -3
+        config.cardCornerRadius = 1000
+        let (low, lowWarnings) = config.sanitized()
+        #expect(low.designWidth == 320)
+        #expect(low.cardGap == 0)
+        #expect(low.cardSkew == -2)
+        #expect(low.cardCornerRadius == 400)
+        for key in ["design_width", "card_gap", "card_skew", "card_corner_radius"] {
+            #expect(lowWarnings.contains { $0.contains(key) }, "missing clamp warning for \(key)")
+        }
 
-        config = Config()
-        config.overlap = -1
-        config.perspective = -12
-        (sanitized, warnings) = config.sanitized()
-        #expect(sanitized.overlap == 0)
-        #expect(sanitized.perspective == 1)
+        config.designWidth = 1_000_000
+        config.cardGap = 5000
+        config.cardSkew = 2.5
+        config.cardCornerRadius = -100
+        let (high, highWarnings) = config.sanitized()
+        #expect(high.designWidth == 20000)
+        #expect(high.cardGap == 2000)
+        #expect(high.cardSkew == 2)
+        #expect(high.cardCornerRadius == 0)
+        #expect(!highWarnings.isEmpty)
+    }
+
+    @Test func removedGeometryKeysAreRejected() {
+        var config = Config()
+        for key in ["tile_width", "tile_height", "tile_shear", "shear_mode", "overlap",
+                    "depth_step", "perspective", "scale_falloff", "preview_max_w_frac",
+                    "preview_max_h_frac", "preview_gap", "collapsed_width_scale"] {
+            #expect(config.apply(key: key, value: "1") == false, "\(key) should be unknown now")
+        }
     }
 
     @Test func sanitizedKeepsTypicalValuesFinite() {
         let (sanitized, _) = Config().sanitized()
         let doubles = [
-            sanitized.tileWidth, sanitized.tileHeight, sanitized.tileShear, sanitized.overlap,
-            sanitized.depthStep, sanitized.perspective, sanitized.scaleFalloff, sanitized.dimFalloff,
-            sanitized.dimFloor, sanitized.rowCenterYFrac, sanitized.previewMaxWFrac,
-            sanitized.previewMaxHFrac, sanitized.previewGap, sanitized.dimAlpha, sanitized.animationMs,
+            sanitized.designWidth, sanitized.cardWidth, sanitized.cardHeight, sanitized.cardGap,
+            sanitized.selectedCardHeight, sanitized.expandedCardWidth, sanitized.expandedCardHeight,
+            sanitized.cardSkew, sanitized.cardCornerRadius, sanitized.cardBorderWidth,
+            sanitized.rowCenterYFrac, sanitized.dimFalloff, sanitized.dimFloor, sanitized.dimAlpha,
+            sanitized.animationMs,
         ]
         #expect(doubles.allSatisfy { $0.isFinite })
     }
 
     @Test func sanitizedReplacesNaN() {
         var config = Config()
-        config.tileWidth = .nan
-        config.overlap = .nan
+        config.designWidth = .nan
+        config.cardWidth = .nan
         config.rowCenterYFrac = .nan
         let (sanitized, warnings) = config.sanitized()
-        #expect(!sanitized.tileWidth.isNaN)
-        #expect(!sanitized.overlap.isNaN)
+        #expect(!sanitized.designWidth.isNaN)
+        #expect(!sanitized.cardWidth.isNaN)
         #expect(!sanitized.rowCenterYFrac.isNaN)
-        #expect(sanitized.tileWidth >= 24)
+        #expect(sanitized.designWidth >= 320)
         #expect(warnings.filter { $0.contains("clamped") }.count >= 3)
     }
 
@@ -124,10 +143,6 @@ struct ConfigTests {
         #expect(SortMode.parse(" MTIME ") == .mtime)
         #expect(SortMode.parse("random") == .random)
         #expect(SortMode.parse("bogus") == nil)
-
-        #expect(ShearMode.parse("UNIFORM") == .uniform)
-        #expect(ShearMode.parse("Mirror") == .mirror)
-        #expect(ShearMode.parse("sideways") == nil)
 
         #expect(ApplyTarget.parse("ALL") == .all)
         #expect(ApplyTarget.parse(" active ") == .active)
