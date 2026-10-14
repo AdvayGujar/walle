@@ -31,10 +31,6 @@ that stays resident whether you are using it or not. walle is the opposite:
 
 ## What it looks like
 
----
-
-## What it looks like
-
 **Resting.** Five cards side by side, each a parallelogram leaning left, all fully opaque. The
 centred card is taller than the rest and carries a thin orange border.
 
