@@ -187,6 +187,7 @@ public struct CLI {
         case "set": return try set(rest, environment: environment)
         case "current": return try current(rest, environment: environment)
         case "history": return try history(rest, environment: environment)
+        case "spaces": return try spaces(rest, environment: environment)
         case "cache": return try cache(rest, environment: environment)
         case "pick":
             let pickOptions = try OptionParser.parse(
@@ -219,6 +220,96 @@ public struct CLI {
         let data = try JSONSerialization.data(
             withJSONObject: object, options: [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes])
         environment.output.out(String(decoding: data, as: UTF8.self))
+    }
+
+    // MARK: - spaces
+
+    static let spaceDateFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "d MMM HH:mm"
+        return formatter
+    }()
+
+    /// macOS keeps the desktop picture per Space, keyed by Space UUID in a private store, and
+    /// the only public API writes the default plus the Space you are currently on. This reports
+    /// that store, and with "all" copies the default onto every other Space so one wallpaper is
+    /// used everywhere.
+    static func spaces(_ tokens: [String], environment: CLIEnvironment) throws -> Int32 {
+        let options = try OptionParser.parse(
+            tokens,
+            spec: OptionSpec(boolOptions: ["json", "all", "help"],
+                             shortAliases: ["j": "json", "h": "help"]))
+        if options.has("help") { return help(environment) }
+        let action = options.positionals.first
+        if let action, action != "all" {
+            throw CLIError("unknown argument '" + action + "'; use 'spaces' or 'spaces all'")
+        }
+        if options.positionals.count > 1 {
+            throw CLIError("spaces takes at most one argument")
+        }
+
+        let url = WallpaperStore.indexURL(environment: environment.environment)
+
+        do {
+            if options.has("all") || action == "all" {
+                let result = try WallpaperStore.applyDefaultToAllSpaces(at: url)
+                if options.has("json") {
+                    try emitJSON(["updated": result.updated,
+                                  "alreadyMatching": result.alreadyMatching,
+                                  "backup": result.backupPath ?? ""], to: environment)
+                } else if result.updated.isEmpty {
+                    environment.output.out("every Space already shows the same wallpaper")
+                } else {
+                    for key in result.updated {
+                        environment.output.out("updated Space " + key)
+                    }
+                    if let backup = result.backupPath {
+                        environment.output.out("backup: " + backup)
+                    }
+                    environment.output.out("WallpaperAgent restarted; switch Spaces to confirm")
+                }
+                return CLIExit.success.rawValue
+            }
+
+            let summaries = try WallpaperStore.spaces(at: url)
+            let image = (try? WallpaperStore.defaultImagePath(at: url)) ?? nil
+            if options.has("json") {
+                try emitJSON([
+                    "store": url.path,
+                    "defaultImage": image ?? "",
+                    "spaces": summaries.map { summary -> [String: Any] in
+                        var entry: [String: Any] = ["key": summary.key,
+                                                    "isDefault": summary.isDefault]
+                        if let when = summary.lastSet {
+                            entry["lastSet"] = ISO8601DateFormatter().string(from: when)
+                        }
+                        return entry
+                    },
+                ], to: environment)
+            } else {
+                environment.output.out("wallpaper store: " + url.path)
+                if let image { environment.output.out("default image:   " + image) }
+                environment.output.out("")
+                for summary in summaries {
+                    let when = summary.lastSet.map { spaceDateFormatter.string(from: $0) } ?? "-"
+                    environment.output.out("  " + summary.label.padding(toLength: 38,
+                                                                        withPad: " ",
+                                                                        startingAt: 0) + when)
+                }
+                let overrides = summaries.filter { !$0.isDefault && !$0.matchesDefault }.count
+                if overrides > 0 {
+                    environment.output.out("")
+                    environment.output.out("\(overrides) Space(s) still show a different wallpaper; "
+                                           + "'walle spaces all' makes them match")
+                } else {
+                    environment.output.out("")
+                    environment.output.out("every Space shows the same wallpaper")
+                }
+            }
+            return CLIExit.success.rawValue
+        } catch {
+            throw CLIError("\(error)")
+        }
     }
 
     // MARK: - help
@@ -261,6 +352,13 @@ public struct CLI {
           history                    Show recently applied wallpapers
           history --limit <n>        Only the n most recent entries
           history --clear            Forget everything
+
+        SPACES
+          spaces                     Show which Spaces have their own wallpaper
+          spaces all                 Copy the default wallpaper onto every Space
+
+          macOS stores the desktop picture per Space, and its public API can only
+          write the one you are looking at. "spaces all" makes them match.
 
         CONFIGURATION
           config list                Print every setting

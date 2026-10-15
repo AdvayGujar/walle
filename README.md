@@ -117,7 +117,10 @@ slower launch.
 | Escape | Close without changing anything |
 
 Keyboard only, by design. Applying writes through the public AppKit API, so it persists across
-reboots and Space changes. History is recorded only *after* it succeeds.
+reboots. History is recorded only *after* it succeeds.
+
+Note: macOS keeps the desktop picture **per Space**, so applying a wallpaper changes the desktop
+you are looking at. See [Wallpapers and Spaces](#wallpapers-and-spaces) below.
 
 ### Commands
 
@@ -135,12 +138,32 @@ reboots and Space changes. History is recorded only *after* it succeeds.
 
     walle history [--limit N] [--clear]
 
+    walle spaces                Show which Spaces have their own wallpaper
+    walle spaces all            Copy the current wallpaper onto every Space
+
     walle config list|get|set|unset|edit|path
     walle doctor                Check the install end to end
     walle help
 
 Most commands accept `--json`. `list` also takes `--limit N`, `--sort name|mtime|random` and
 `--dir PATH`. Exit codes: **0** applied, **1** error, **2** dismissed, **3** already running.
+
+### Wallpapers and Spaces
+
+**macOS stores the desktop picture per Space**, and the only public API for setting it writes the
+Space you are currently on. So applying a wallpaper changes the desktop you are looking at and
+leaves your other Spaces alone. System Settings behaves in exactly the same way — this is not
+something walle gets wrong.
+
+If your Spaces have drifted apart, walle can put them back in step:
+
+    walle spaces        # what the default is, and which Spaces differ from it
+    walle spaces all    # copy the current wallpaper onto every Space
+
+`spaces all` writes macOS's private wallpaper store, so it backs the file up first and restarts
+`WallpaperAgent` so the change takes effect. The backup is left beside the store as
+`Index.plist.walle-backup`. Nothing is permanently removed — set an individual Space's wallpaper
+again at any time to get the old behaviour back.
 
 ---
 
