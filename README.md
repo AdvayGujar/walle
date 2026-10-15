@@ -65,6 +65,20 @@ Installs to `~/.local/share/walle` and symlinks `walle` into `~/.local/bin`. If 
 your `PATH` the installer prints the line to add. Other options: `--prefix DIR`,
 `--bin-dir DIR`, `--dry-run`, and `./scripts/uninstall.sh`.
 
+### Packaging
+
+`build.sh` and `install.sh` both take `--prefix DIR`, and `install.sh --packager` keeps every
+write inside that prefix — no `~/.local`, no `~/.config`, no `PATH` changes, no prompts, and
+never `sudo`:
+
+    ./scripts/build.sh --prefix "$(brew --prefix)/Cellar/walle/1.0.0"
+    ./scripts/install.sh --packager --prefix /opt/homebrew/Cellar/walle/1.0.0
+
+Build `--version VER` (or `WALLE_VERSION=VER`) stamps the app. It exists because a packager
+building from a release tarball has no `.git`, so the tag cannot be read there. The version
+lives in one place, `Sources/WalleCore/WalleVersion.swift`, and `build.sh` fails if the built
+binary does not report the version it just stamped.
+
 ### 2. Point it at your wallpapers
 
     walle add ~/Pictures/Wallpapers      # creates the directory if needed
@@ -145,6 +159,7 @@ you are looking at. See [Wallpapers and Spaces](#wallpapers-and-spaces) below.
 
     walle config list|get|set|unset|edit|path
     walle doctor                Check the install end to end
+    walle version               Print the version (also --version)
     walle help
 
 Most commands accept `--json`. `list` also takes `--limit N`, `--sort name|mtime|random` and

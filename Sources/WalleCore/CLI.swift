@@ -140,7 +140,8 @@ public enum OptionParser {
 }
 
 public struct CLI {
-    public static let version = "0.1.0"
+    /// Re-exported from `WalleVersion`, the one place the version is written down.
+    public static let version = WalleVersion.string
 
     public static func run(_ arguments: [String], environment: CLIEnvironment) -> Int32 {
         do {
@@ -454,6 +455,7 @@ public struct CLI {
           --sort <name|mtime|random> list: ordering
           --dir <path>               list: scan this path instead of the configured ones
           -h, --help                 Show this help
+          --version                  Show the version
 
         KEYBOARD, WHILE THE PICKER IS OPEN
           left / right (up / down)   Move between wallpapers, wrapping both ways

@@ -4,21 +4,32 @@
 # Layout after install:
 #   PREFIX/Walle.app/Contents/MacOS/walle-picker
 #   PREFIX/bin/walle          the real CLI
-#   PREFIX/bin/walle-picker   sibling link so the CLI finds the picker
+#   PREFIX/bin/walle-picker   relative sibling link, inside the prefix
 #   BIN_DIR/walle -> PREFIX/bin/walle
 #
 # The config file is created once and never overwritten. Running the installer
 # twice is safe.
+#
+# End users get the defaults above. Packagers (Homebrew and friends) should pass
+# --packager, which keeps every write inside PREFIX:
+#
+#   ./scripts/install.sh --packager --prefix /opt/homebrew/Cellar/walle/1.0.0
+#
+# --packager implies --no-config (no writes to ~/.config), defaults --bin-dir to
+# PREFIX/bin (no PATH symlink outside the prefix) and never prompts. Combined
+# with --dry-run it changes nothing at all. This script never calls sudo.
 set -eo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-DIST="$ROOT/dist"
 
 PREFIX="${HOME}/.local/share/walle"
 BIN_DIR="${HOME}/.local/bin"
+BIN_DIR_GIVEN=0
+VERSION=""
 NO_CONFIG=0
 CLEAN=0
 DRY_RUN=0
+PACKAGER=0
 
 usage() {
     cat <<EOF
@@ -26,6 +37,9 @@ Usage: $(basename "$0") [options]
 
   --prefix DIR   install root (default: $HOME/.local/share/walle)
   --bin-dir DIR  directory for the 'walle' command (default: $HOME/.local/bin)
+  --version VER  version to stamp into the app (default: WalleVersion.swift)
+  --packager     install only inside --prefix: implies --no-config, defaults
+                 --bin-dir to PREFIX/bin, and never prompts
   --no-config    do not create a default config file
   --clean        remove the .build intermediates after installing
   --dry-run      print what would happen and change nothing
@@ -62,9 +76,15 @@ while [ $# -gt 0 ]; do
             PREFIX="${1#--prefix=}"; shift ;;
         --bin-dir)
             [ $# -ge 2 ] || { echo "install.sh: --bin-dir needs a directory" >&2; exit 2; }
-            BIN_DIR="$2"; shift 2 ;;
+            BIN_DIR="$2"; BIN_DIR_GIVEN=1; shift 2 ;;
         --bin-dir=*)
-            BIN_DIR="${1#--bin-dir=}"; shift ;;
+            BIN_DIR="${1#--bin-dir=}"; BIN_DIR_GIVEN=1; shift ;;
+        --version)
+            [ $# -ge 2 ] || { echo "install.sh: --version needs a value" >&2; exit 2; }
+            VERSION="$2"; shift 2 ;;
+        --version=*)
+            VERSION="${1#--version=}"; shift ;;
+        --packager) PACKAGER=1; shift ;;
         --no-config) NO_CONFIG=1; shift ;;
         --clean) CLEAN=1; shift ;;
         --dry-run) DRY_RUN=1; shift ;;
@@ -74,6 +94,14 @@ while [ $# -gt 0 ]; do
 done
 
 PREFIX="$(abs_path "$PREFIX")"
+# A packager owns only PREFIX. Keep the CLI inside it rather than symlinking into
+# the user's ~/.local/bin, and never write a config file into the user's home.
+if [ "$PACKAGER" -eq 1 ]; then
+    NO_CONFIG=1
+    if [ "$BIN_DIR_GIVEN" -eq 0 ]; then
+        BIN_DIR="$PREFIX/bin"
+    fi
+fi
 BIN_DIR="$(abs_path "$BIN_DIR")"
 CONFIG_HOME="${XDG_CONFIG_HOME:-$HOME/.config}"
 CONFIG_FILE="$CONFIG_HOME/walle/config"
@@ -83,47 +111,41 @@ LINK="$BIN_DIR/walle"
 echo "==> walle installer"
 echo "    prefix:  $PREFIX"
 echo "    bin dir: $BIN_DIR"
-if [ "$DRY_RUN" -eq 1 ]; then
+if [ "$PACKAGER" -eq 1 ]; then
+    echo "    mode:    packager (writes stay inside the prefix)"
+elif [ "$DRY_RUN" -eq 1 ]; then
     echo "    mode:    dry run"
 fi
 
-# 1. Build first, so a broken build never leaves a half install.
+# 1. Build first, so a broken build never leaves a half install. build.sh owns
+# every step that writes: dist/ and, when asked, the prefix itself.
+build_args=(--prefix "$PREFIX")
+if [ -n "$VERSION" ]; then
+    build_args+=(--version "$VERSION")
+fi
+
 if [ "$DRY_RUN" -eq 1 ]; then
-    echo "==> Would run $ROOT/scripts/build.sh"
+    echo "==> Would run $ROOT/scripts/build.sh ${build_args[*]}"
 else
     if [ ! -x "$ROOT/scripts/build.sh" ]; then
         echo "install.sh: $ROOT/scripts/build.sh is missing or not executable" >&2
         exit 1
     fi
-    echo "==> Building"
-    if ! "$ROOT/scripts/build.sh"; then
+    echo "==> Building and staging into $PREFIX"
+    if ! "$ROOT/scripts/build.sh" "${build_args[@]}"; then
         echo "install.sh: build.sh failed; nothing installed" >&2
         exit 1
     fi
 fi
 
-if [ "$DRY_RUN" -eq 0 ] && [ ! -d "$DIST/Walle.app" ]; then
-    echo "install.sh: build.sh did not produce $DIST/Walle.app" >&2
+# 2. Confirm the build staged what we are about to report as installed.
+if [ "$DRY_RUN" -eq 0 ] && { [ ! -x "$TARGET" ] || [ ! -d "$PREFIX/Walle.app" ]; }; then
+    echo "install.sh: build.sh did not stage a complete tree into $PREFIX" >&2
     exit 1
 fi
 
-# 2. Install the dist tree into the prefix.
-echo "==> Installing into $PREFIX"
-run mkdir -p "$PREFIX"
-run rm -rf "$PREFIX/Walle.app"
-run cp -R "$DIST/Walle.app" "$PREFIX/Walle.app"
-run chmod +x "$PREFIX/Walle.app/Contents/MacOS/walle-picker"
-run mkdir -p "$PREFIX/bin"
-run rm -f "$PREFIX/bin/walle"
-run cp "$DIST/bin/walle" "$PREFIX/bin/walle"
-run chmod +x "$PREFIX/bin/walle"
-
-# The CLI locates walle-picker beside its own resolved executable, so keep a
-# sibling link. This is what makes a non-default prefix work without relying on
-# the hard-coded ~/.local/share/walle fallback.
-run ln -sfn "$PREFIX/Walle.app/Contents/MacOS/walle-picker" "$PREFIX/bin/walle-picker"
-
-# 3. Link the CLI onto the user's PATH.
+# 3. Link the CLI onto the user's PATH. In packager mode this is inside PREFIX
+# already, so it is a no-op.
 if [ "$BIN_DIR" = "$PREFIX/bin" ]; then
     echo "==> $LINK is the installed CLI itself; no PATH symlink needed"
 else
@@ -144,9 +166,14 @@ else
     run ln -s "$TARGET" "$LINK"
 fi
 
-# 4. Create the config once. Never overwrite an existing one.
+# 4. Create the config once. Never overwrite an existing one. This is the one
+# write outside PREFIX, which is why --packager turns it off entirely.
 if [ "$NO_CONFIG" -eq 1 ]; then
-    echo "==> Config: skipped (--no-config)"
+    if [ "$PACKAGER" -eq 1 ]; then
+        echo "==> Config: skipped (packager mode; created on first run)"
+    else
+        echo "==> Config: skipped (--no-config)"
+    fi
 elif [ -e "$CONFIG_FILE" ]; then
     echo "==> Config: keeping existing $CONFIG_FILE"
 else
@@ -174,16 +201,22 @@ if [ "$DRY_RUN" -eq 0 ]; then
     echo "    walle CLI   $(du -sh "$PREFIX/bin/walle" | awk '{print $1}')"
 fi
 
-case ":$PATH:" in
-    *":$BIN_DIR:"*) ON_PATH=1 ;;
-    *) ON_PATH=0 ;;
-esac
-
 echo
 echo "==> Installed"
 echo "    app:     $PREFIX/Walle.app"
 echo "    CLI:     $PREFIX/bin/walle"
+
+# Everything below is end-user guidance for a hand install. A package manager
+# reports the same things through its own caveats, so keep it out of the way.
+if [ "$PACKAGER" -eq 1 ]; then
+    exit 0
+fi
+
 echo "    config:  $CONFIG_FILE"
+case ":$PATH:" in
+    *":$BIN_DIR:"*) ON_PATH=1 ;;
+    *) ON_PATH=0 ;;
+esac
 if [ "$ON_PATH" -eq 1 ]; then
     echo "    PATH:    $BIN_DIR is on PATH"
 else
