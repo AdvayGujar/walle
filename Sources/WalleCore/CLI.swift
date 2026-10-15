@@ -316,23 +316,29 @@ public struct CLI {
                                                                         withPad: " ",
                                                                         startingAt: 0) + when)
                 }
-                let live = Set(WallpaperStore.liveSpaceUUIDs())
-                let existing = Set(summaries.filter { !$0.isDefault }.map(\.key))
+                let inventory = WallpaperStore.spaceInventory()
+                let live = Set(inventory.all)
+                let existing = Set(summaries.map(\.key))
                 let missing = live.subtracting(existing).sorted()
                 let stale = existing.subtracting(live).sorted()
-                let differing = summaries.filter { !$0.isDefault && !$0.matchesDefault }.count
+                let differing = summaries.filter { !$0.matchesDefault }.count
 
                 environment.output.out("")
                 environment.output.out("mode: " + (settings.spaces == .all
                     ? "on  - every Space is updated when you apply"
                     : "off - only the Space you are on is updated"))
-                if live.isEmpty {
+                if !inventory.isKnown {
                     environment.output.out("could not read com.apple.spaces, so Space status is unknown")
                 } else {
-                    environment.output.out("live Spaces: \(live.count)"
-                                           + ", with a store entry: \(live.intersection(existing).count)")
+                    let switchable = inventory.switchable
+                    environment.output.out("Spaces you can switch to: \(switchable.count)"
+                                           + "  (all with a store entry: "
+                                           + "\(switchable.allSatisfy { existing.contains($0) }))")
+                    if !inventory.collapsed.isEmpty {
+                        environment.output.out("Spaces on collapsed displays: \(inventory.collapsed.count)")
+                    }
                     for uuid in missing {
-                        environment.output.out("  no entry:    " + uuid)
+                        environment.output.out("  no entry:    " + (uuid.isEmpty ? "(empty uuid)" : uuid))
                     }
                 }
                 if !stale.isEmpty {

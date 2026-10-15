@@ -26,12 +26,14 @@ struct WallpaperStoreTests {
                     "LastSet": date]
         }
 
+        // Distinct timestamps, because the sync falls back to the most recently set entry when
+        // it is not told which wallpaper was just applied.
         let now = Date()
         let root: [String: Any] = [
             "Spaces": [
                 "": ["Default": ["Desktop": desktop("shared.jpg", at: now)]],
-                "SPACE-A": ["Default": ["Desktop": desktop("old-a.jpg", at: now)]],
-                "SPACE-B": ["Default": ["Desktop": desktop("old-b.jpg", at: now)]],
+                "SPACE-A": ["Default": ["Desktop": desktop("old-a.jpg", at: now.addingTimeInterval(-60))]],
+                "SPACE-B": ["Default": ["Desktop": desktop("old-b.jpg", at: now.addingTimeInterval(-120))]],
             ],
             "Displays": ["DISPLAY-1": ["Type": "individual"]],
         ]
@@ -68,7 +70,7 @@ struct WallpaperStoreTests {
         defer { try? FileManager.default.removeItem(at: dir) }
 
         let result = try WallpaperStore.applyDefaultToAllSpaces(
-            at: url, liveSpaces: ["SPACE-A", "SPACE-B"])
+            at: url, liveSpaces: ["SPACE-A", "SPACE-B"], sourcePath: "/tmp/shared.jpg")
         #expect(result.updated.sorted() == ["SPACE-A", "SPACE-B"])
         #expect(result.backupPath != nil)
 
@@ -82,8 +84,10 @@ struct WallpaperStoreTests {
         let (url, dir) = makeStore()
         defer { try? FileManager.default.removeItem(at: dir) }
 
-        _ = try WallpaperStore.applyDefaultToAllSpaces(at: url, liveSpaces: ["SPACE-A", "SPACE-B"])
-        let second = try WallpaperStore.applyDefaultToAllSpaces(at: url, liveSpaces: ["SPACE-A", "SPACE-B"])
+        _ = try WallpaperStore.applyDefaultToAllSpaces(
+            at: url, liveSpaces: ["SPACE-A", "SPACE-B"], sourcePath: "/tmp/shared.jpg")
+        let second = try WallpaperStore.applyDefaultToAllSpaces(
+            at: url, liveSpaces: ["SPACE-A", "SPACE-B"], sourcePath: "/tmp/shared.jpg")
         // Nothing to do the second time. Comparing serialised bytes would wrongly report
         // changes here, because equal dictionaries do not always serialise identically.
         #expect(second.updated.isEmpty)
@@ -135,6 +139,26 @@ struct WallpaperStoreTests {
             at: url, liveSpaces: ["SPACE-A"], pruneStale: true)
         #expect(pruned.pruned == ["SPACE-B"])
         #expect(try WallpaperStore.spaces(at: url).count == 2)
+    }
+
+    @Test("the applied wallpaper is the source, not a stale default")
+    func appliedPathIsTheSource() throws {
+        let (url, dir) = makeStore()
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        // This is the bug that made the picker look broken: the default still held an old
+        // picture, so copying the default silently undid the wallpaper that was just applied.
+        let result = try WallpaperStore.applyDefaultToAllSpaces(
+            at: url, liveSpaces: ["SPACE-A", "SPACE-B"], sourcePath: "/tmp/old-a.jpg")
+        // SPACE-A already holds the chosen picture, so only SPACE-B has to be rewritten.
+        #expect(result.updated == ["SPACE-B"])
+
+        // A second run finds nothing to do, which proves both Spaces converged on the picture
+        // that was applied rather than on the stale default.
+        let again = try WallpaperStore.applyDefaultToAllSpaces(
+            at: url, liveSpaces: ["SPACE-A", "SPACE-B"], sourcePath: "/tmp/old-a.jpg")
+        #expect(again.updated.isEmpty)
+        #expect(again.alreadyMatching.sorted() == ["SPACE-A", "SPACE-B"])
     }
 
     @Test("a missing store is reported, not guessed at")

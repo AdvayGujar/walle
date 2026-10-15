@@ -151,7 +151,7 @@ case "--apply":
         writeError(String(describing: error))
         exit(1)
     }
-    if let warning = WallpaperStore.syncIfEnabled(config.spaces) {
+    if let warning = WallpaperStore.syncIfEnabled(config.spaces, appliedPath: url.path) {
         writeError(warning)
     }
 

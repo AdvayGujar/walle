@@ -101,7 +101,8 @@ public final class PickerController: NSObject, NSApplicationDelegate {
             }
             // "walle spaces on" reaches here: macOS keeps the desktop picture per Space, so
             // the other Spaces have to be brought into line explicitly.
-            if let warning = WallpaperStore.syncIfEnabled(spacesMode) {
+            if let warning = WallpaperStore.syncIfEnabled(spacesMode,
+                                                            appliedPath: wallpaper.path) {
                 FileHandle.standardError.write(Data(("walle-picker: " + warning + "\n").utf8))
             }
             // Recording happens only after the desktop actually changed, and a failure
