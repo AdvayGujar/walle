@@ -88,6 +88,7 @@ public final class PickerController: NSObject, NSApplicationDelegate {
         let applyPaths = paths
         let applyTo = config.applyTo
         let fillMode = config.fillMode
+        let spacesMode = config.spaces
 
         view.onApply = { wallpaper in
             do {
@@ -97,6 +98,11 @@ public final class PickerController: NSObject, NSApplicationDelegate {
                 FileHandle.standardError.write(
                     Data(("walle-picker: " + String(describing: error) + "\n").utf8))
                 exit(1)
+            }
+            // "walle spaces on" reaches here: macOS keeps the desktop picture per Space, so
+            // the other Spaces have to be brought into line explicitly.
+            if let warning = WallpaperStore.syncIfEnabled(spacesMode) {
+                FileHandle.standardError.write(Data(("walle-picker: " + warning + "\n").utf8))
             }
             // Recording happens only after the desktop actually changed, and a failure
             // here is reported rather than swallowed.

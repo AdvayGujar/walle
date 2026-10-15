@@ -117,9 +117,48 @@ public enum WallpaperStore {
     }
 
     public struct SyncResult: Sendable {
+        /// Spaces that had an entry showing something else and were rewritten.
         public let updated: [String]
+        /// Spaces that had no entry at all and were given one.
+        public let created: [String]
         public let alreadyMatching: [String]
+        /// Store entries for Spaces that no longer exist.
+        public let stale: [String]
+        public let pruned: [String]
         public let backupPath: String?
+
+        public var changedAnything: Bool { !updated.isEmpty || !created.isEmpty || !pruned.isEmpty }
+    }
+
+    /// The Spaces that actually exist right now, from com.apple.spaces.
+    ///
+    /// This matters because the two lists drift apart in both directions. Creating a Space makes
+    /// macOS add an entry to the wallpaper store, but deleting a Space leaves its entry behind
+    /// forever, so the store accumulates keys for Spaces that are gone. Comparing the two is the
+    /// only way to know which Spaces still need a wallpaper.
+    public static func liveSpaceUUIDs(preferencesURL: URL? = nil) -> [String] {
+        let url = preferencesURL ?? FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/Preferences/com.apple.spaces.plist")
+        guard let data = FileManager.default.contents(atPath: url.path),
+              let root = try? PropertyListSerialization.propertyList(
+                from: data, options: [], format: nil) else { return [] }
+
+        var found: Set<String> = []
+        func walk(_ node: Any) {
+            if let dict = node as? [String: Any] {
+                if let uuid = dict["uuid"] as? String, !uuid.isEmpty { found.insert(uuid) }
+                for value in dict.values { walk(value) }
+            } else if let array = node as? [Any] {
+                for value in array { walk(value) }
+            } else if let nested = node as? Data,
+                      let inner = try? PropertyListSerialization.propertyList(
+                        from: nested, options: [], format: nil) {
+                // The live configuration is nested in a binary blob inside the preference.
+                walk(inner)
+            }
+        }
+        walk(root)
+        return found.sorted()
     }
 
     /// Copies the default Space's desktop picture onto every other Space.
@@ -128,7 +167,9 @@ public enum WallpaperStore {
     /// way to address another Space, and system events' `every desktop` resolves to the current
     /// Space only on current macOS.
     @discardableResult
-    public static func applyDefaultToAllSpaces(at url: URL) throws -> SyncResult {
+    public static func applyDefaultToAllSpaces(at url: URL,
+                                               liveSpaces: [String]? = nil,
+                                               pruneStale: Bool = false) throws -> SyncResult {
         let root = try readRoot(at: url)
         guard let spaces = root["Spaces"] as? [String: Any] else {
             throw StoreError.unexpectedShape("no Spaces dictionary")
@@ -137,6 +178,11 @@ public enum WallpaperStore {
               let defaultDesktop = defaultEntry["Default"] as? [String: Any] else {
             throw StoreError.unexpectedShape("no default Space entry to copy from")
         }
+
+        // Which Spaces exist. Falling back to the store's own keys keeps this working on a
+        // machine where com.apple.spaces cannot be read, at the cost of not noticing stale ones.
+        let live = liveSpaces ?? liveSpaceUUIDs()
+        let wantedKeys = live.isEmpty ? spaces.keys.filter { !$0.isEmpty } : live
 
         // Back up before touching anything, so a bad result can be undone.
         let backup = url.deletingLastPathComponent()
@@ -151,10 +197,18 @@ public enum WallpaperStore {
         let wanted = defaultDesktop as NSDictionary
 
         var updated: [String] = []
+        var created: [String] = []
         var alreadyMatching: [String] = []
         var newSpaces = spaces
-        for key in spaces.keys.sorted() where !key.isEmpty {
-            guard var entry = spaces[key] as? [String: Any] else { continue }
+
+        for key in wantedKeys.sorted() {
+            guard var entry = spaces[key] as? [String: Any] else {
+                // This Space exists but the store has never heard of it, so clone the default
+                // entry wholesale: it already has precisely the shape macOS expects.
+                newSpaces[key] = defaultEntry
+                created.append(key)
+                continue
+            }
             // Compare as property lists rather than by identity, so a Space that already
             // matches is left completely alone and only genuinely stale ones are rewritten.
             if let existing = entry["Default"] as? [String: Any],
@@ -167,8 +221,20 @@ public enum WallpaperStore {
             updated.append(key)
         }
 
-        guard !updated.isEmpty else {
-            return SyncResult(updated: [], alreadyMatching: alreadyMatching, backupPath: backupPath)
+        // Delete the leftovers. Nothing else references them, but they are dead weight and
+        // would silently resurface if macOS ever reused the UUID.
+        let stale = spaces.keys.filter { !$0.isEmpty && !wantedKeys.contains($0) }.sorted()
+        var pruned: [String] = []
+        if pruneStale {
+            for key in stale {
+                newSpaces.removeValue(forKey: key)
+                pruned.append(key)
+            }
+        }
+
+        guard !updated.isEmpty || !created.isEmpty || !pruned.isEmpty else {
+            return SyncResult(updated: [], created: [], alreadyMatching: alreadyMatching,
+                              stale: stale, pruned: [], backupPath: backupPath)
         }
 
         var newRoot = root
@@ -182,7 +248,26 @@ public enum WallpaperStore {
         if url.path == indexURL(environment: [:]).path {
             restartWallpaperAgent()
         }
-        return SyncResult(updated: updated, alreadyMatching: alreadyMatching, backupPath: backupPath)
+        return SyncResult(updated: updated, created: created,
+                          alreadyMatching: alreadyMatching, stale: stale, pruned: pruned,
+                          backupPath: backupPath)
+    }
+
+    /// Applies the wallpaper to every Space, when the user has switched that on with
+    /// "walle spaces on". Returns a warning rather than throwing, so an apply that already
+    /// succeeded is never reported as a failure just because the Space sync did not.
+    @discardableResult
+    public static func syncIfEnabled(
+        _ mode: SpacesMode,
+        environment: [String: String] = ProcessInfo.processInfo.environment) -> String? {
+        guard mode == .all else { return nil }
+        do {
+            _ = try applyDefaultToAllSpaces(at: indexURL(environment: environment),
+                                            liveSpaces: liveSpaceUUIDs())
+            return nil
+        } catch {
+            return "the wallpaper was applied, but not to every Space: " + String(describing: error)
+        }
     }
 
     /// WallpaperAgent caches the store, so it has to be restarted for a direct write to show.

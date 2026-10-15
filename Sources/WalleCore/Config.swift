@@ -24,6 +24,22 @@ public enum FillMode: String, Sendable, CaseIterable {
     }
 }
 
+/// Whether applying a wallpaper changes every Space or only the one on screen.
+///
+/// macOS stores the desktop picture per Space, so "all" means walle has to write the private
+/// wallpaper store after applying. "current" is the ordinary macOS behaviour.
+public enum SpacesMode: String, Sendable, CaseIterable {
+    case current, all
+
+    public static func parse(_ raw: String) -> SpacesMode? {
+        switch raw.lowercased().trimmingCharacters(in: .whitespaces) {
+        case "current", "single", "individual", "off": return .current
+        case "all", "every", "sync", "on": return .all
+        default: return nil
+        }
+    }
+}
+
 /// Everything tunable, parsed from a plain key = value file.
 ///
 /// Geometry is expressed in design units for a 1920-wide screen. Layout multiplies every
@@ -58,6 +74,7 @@ public struct Config: Sendable, Equatable {
 
     public var applyTo: ApplyTarget
     public var fillMode: FillMode
+    public var spaces: SpacesMode
     public var thumbMaxPx: Int
     public var previewMaxPx: Int
     public var typeToFilter: Bool
@@ -88,6 +105,7 @@ public struct Config: Sendable, Equatable {
         expandOnEnter: Bool = true,
         applyTo: ApplyTarget = .all,
         fillMode: FillMode = .fill,
+        spaces: SpacesMode = .current,
         thumbMaxPx: Int = 1600,
         previewMaxPx: Int = 1600,
         typeToFilter: Bool = true,
@@ -117,6 +135,7 @@ public struct Config: Sendable, Equatable {
         self.expandOnEnter = expandOnEnter
         self.applyTo = applyTo
         self.fillMode = fillMode
+        self.spaces = spaces
         self.thumbMaxPx = thumbMaxPx
         self.previewMaxPx = previewMaxPx
         self.typeToFilter = typeToFilter
@@ -132,7 +151,7 @@ public struct Config: Sendable, Equatable {
         "row_center_y_frac", "dim_falloff", "dim_floor", "dim_alpha",
         "expanded_neighbour_alpha",
         "animation_ms", "expand_on_enter",
-        "apply_to", "fill_mode", "thumb_max_px", "preview_max_px",
+        "apply_to", "fill_mode", "spaces", "thumb_max_px", "preview_max_px",
         "type_to_filter", "log_level",
     ]
 
@@ -185,6 +204,7 @@ public struct Config: Sendable, Equatable {
         case "expand_on_enter": expandOnEnter = parseBool(value) ?? expandOnEnter
         case "apply_to": applyTo = ApplyTarget.parse(value) ?? applyTo
         case "fill_mode": fillMode = FillMode.parse(value) ?? fillMode
+        case "spaces": spaces = SpacesMode.parse(value) ?? spaces
         case "thumb_max_px": thumbMaxPx = parseInt(value) ?? thumbMaxPx
         case "preview_max_px": previewMaxPx = parseInt(value) ?? previewMaxPx
         case "type_to_filter": typeToFilter = parseBool(value) ?? typeToFilter
@@ -220,6 +240,7 @@ public struct Config: Sendable, Equatable {
         case "expand_on_enter": return boolString(expandOnEnter)
         case "apply_to": return applyTo.rawValue
         case "fill_mode": return fillMode.rawValue
+        case "spaces": return spaces.rawValue
         case "thumb_max_px": return String(thumbMaxPx)
         case "preview_max_px": return String(previewMaxPx)
         case "type_to_filter": return boolString(typeToFilter)

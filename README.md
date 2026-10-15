@@ -155,15 +155,26 @@ Space you are currently on. So applying a wallpaper changes the desktop you are 
 leaves your other Spaces alone. System Settings behaves in exactly the same way — this is not
 something walle gets wrong.
 
-If your Spaces have drifted apart, walle can put them back in step:
+If you would rather one wallpaper covered every Space, turn that on once:
 
-    walle spaces        # what the default is, and which Spaces differ from it
-    walle spaces all    # copy the current wallpaper onto every Space
+    walle spaces on     # every wallpaper you pick from now on goes to every Space
+    walle spaces off    # back to only changing the Space you are on (the default)
 
-`spaces all` writes macOS's private wallpaper store, so it backs the file up first and restarts
-`WallpaperAgent` so the change takes effect. The backup is left beside the store as
-`Index.plist.walle-backup`. Nothing is permanently removed — set an individual Space's wallpaper
-again at any time to get the old behaviour back.
+`spaces on` brings the Spaces you already have into line immediately, and remembers the setting
+in your config file as `spaces = all`.
+
+    walle spaces               # the mode, the live Spaces, and any stale entries
+    walle spaces all           # sync now, without changing the mode
+    walle spaces all --prune   # also drop entries for Spaces you have deleted
+
+macOS never tidies up after a deleted Space, so the store slowly fills with entries for Spaces
+that no longer exist — while a Space created since you last applied a wallpaper has no entry at
+all and keeps showing whatever it had. That is why the sync compares the store against the list
+of Spaces that *actually exist* rather than trusting the store's own keys.
+
+This writes macOS's private wallpaper store, so walle backs the file up first (as
+`Index.plist.walle-backup`) and restarts `WallpaperAgent` so the change takes effect. Nothing is
+permanently removed unless you pass `--prune`.
 
 ---
 

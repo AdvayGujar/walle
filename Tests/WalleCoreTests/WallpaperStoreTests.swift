@@ -67,7 +67,8 @@ struct WallpaperStoreTests {
         let (url, dir) = makeStore()
         defer { try? FileManager.default.removeItem(at: dir) }
 
-        let result = try WallpaperStore.applyDefaultToAllSpaces(at: url)
+        let result = try WallpaperStore.applyDefaultToAllSpaces(
+            at: url, liveSpaces: ["SPACE-A", "SPACE-B"])
         #expect(result.updated.sorted() == ["SPACE-A", "SPACE-B"])
         #expect(result.backupPath != nil)
 
@@ -81,8 +82,8 @@ struct WallpaperStoreTests {
         let (url, dir) = makeStore()
         defer { try? FileManager.default.removeItem(at: dir) }
 
-        _ = try WallpaperStore.applyDefaultToAllSpaces(at: url)
-        let second = try WallpaperStore.applyDefaultToAllSpaces(at: url)
+        _ = try WallpaperStore.applyDefaultToAllSpaces(at: url, liveSpaces: ["SPACE-A", "SPACE-B"])
+        let second = try WallpaperStore.applyDefaultToAllSpaces(at: url, liveSpaces: ["SPACE-A", "SPACE-B"])
         // Nothing to do the second time. Comparing serialised bytes would wrongly report
         // changes here, because equal dictionaries do not always serialise identically.
         #expect(second.updated.isEmpty)
@@ -94,13 +95,46 @@ struct WallpaperStoreTests {
         let (url, dir) = makeStore()
         defer { try? FileManager.default.removeItem(at: dir) }
 
-        _ = try WallpaperStore.applyDefaultToAllSpaces(at: url)
+        _ = try WallpaperStore.applyDefaultToAllSpaces(at: url, liveSpaces: ["SPACE-A", "SPACE-B"])
         let data = try Data(contentsOf: url)
         let root = try PropertyListSerialization.propertyList(
             from: data, options: [], format: nil) as? [String: Any]
         #expect(root?["Displays"] != nil)
         let spaces = root?["Spaces"] as? [String: Any]
         #expect(spaces?.count == 3)
+    }
+
+    @Test("a live Space with no entry is created")
+    func createsMissingSpaces() throws {
+        let (url, dir) = makeStore()
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        // SPACE-C exists as a Space but the store has never heard of it, which is exactly the
+        // case that made a wallpaper only reach some Spaces.
+        let result = try WallpaperStore.applyDefaultToAllSpaces(
+            at: url, liveSpaces: ["SPACE-A", "SPACE-B", "SPACE-C"])
+        #expect(result.created == ["SPACE-C"])
+
+        let after = try WallpaperStore.spaces(at: url)
+        #expect(after.count == 4)                       // default + three Spaces
+        #expect(after.allSatisfy { $0.matchesDefault })
+    }
+
+    @Test("entries for removed Spaces are reported, and pruned only on request")
+    func reportsStaleSpaces() throws {
+        let (url, dir) = makeStore()
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        // Only SPACE-A still exists; SPACE-B was deleted, but the store keeps it forever.
+        let result = try WallpaperStore.applyDefaultToAllSpaces(at: url, liveSpaces: ["SPACE-A"])
+        #expect(result.stale == ["SPACE-B"])
+        #expect(result.pruned.isEmpty)
+        #expect(try WallpaperStore.spaces(at: url).count == 3)
+
+        let pruned = try WallpaperStore.applyDefaultToAllSpaces(
+            at: url, liveSpaces: ["SPACE-A"], pruneStale: true)
+        #expect(pruned.pruned == ["SPACE-B"])
+        #expect(try WallpaperStore.spaces(at: url).count == 2)
     }
 
     @Test("a missing store is reported, not guessed at")

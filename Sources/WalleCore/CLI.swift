@@ -237,36 +237,56 @@ public struct CLI {
     static func spaces(_ tokens: [String], environment: CLIEnvironment) throws -> Int32 {
         let options = try OptionParser.parse(
             tokens,
-            spec: OptionSpec(boolOptions: ["json", "all", "help"],
+            spec: OptionSpec(boolOptions: ["json", "all", "prune", "help"],
                              shortAliases: ["j": "json", "h": "help"]))
         if options.has("help") { return help(environment) }
         let action = options.positionals.first
-        if let action, action != "all" {
-            throw CLIError("unknown argument '" + action + "'; use 'spaces' or 'spaces all'")
+        if let action, !["all", "on", "off"].contains(action) {
+            throw CLIError("unknown argument '" + action
+                           + "'; use 'spaces', 'spaces on', 'spaces off' or 'spaces all'")
         }
         if options.positionals.count > 1 {
             throw CLIError("spaces takes at most one argument")
+        }
+
+        let (settings, _) = loadConfig(environment)
+
+        // The toggle. "on" makes every future apply reach every Space; "off" restores the
+        // ordinary macOS behaviour of changing only the desktop you are looking at.
+        if action == "on" || action == "off" {
+            let status = try config(["set", "spaces", action == "on" ? "all" : "current"],
+                                    environment: environment)
+            guard status == CLIExit.success.rawValue else { return status }
+            if action == "on" {
+                environment.output.out("spaces on: a wallpaper you pick will be applied to every Space")
+                // Bring the Spaces that already exist into line now, rather than waiting for
+                // the next apply to do it.
+                let url = WallpaperStore.indexURL(environment: environment.environment)
+                reportSync(try WallpaperStore.applyDefaultToAllSpaces(
+                    at: url, liveSpaces: WallpaperStore.liveSpaceUUIDs()), environment)
+            } else {
+                environment.output.out("spaces off: a wallpaper you pick will only affect the Space you are on")
+            }
+            return CLIExit.success.rawValue
         }
 
         let url = WallpaperStore.indexURL(environment: environment.environment)
 
         do {
             if options.has("all") || action == "all" {
-                let result = try WallpaperStore.applyDefaultToAllSpaces(at: url)
+                let live = WallpaperStore.liveSpaceUUIDs()
+                let result = try WallpaperStore.applyDefaultToAllSpaces(
+                    at: url, liveSpaces: live, pruneStale: options.has("prune"))
                 if options.has("json") {
                     try emitJSON(["updated": result.updated,
+                                  "created": result.created,
                                   "alreadyMatching": result.alreadyMatching,
+                                  "stale": result.stale,
+                                  "pruned": result.pruned,
+                                  "liveSpaces": live,
                                   "backup": result.backupPath ?? ""], to: environment)
-                } else if result.updated.isEmpty {
-                    environment.output.out("every Space already shows the same wallpaper")
                 } else {
-                    for key in result.updated {
-                        environment.output.out("updated Space " + key)
-                    }
-                    if let backup = result.backupPath {
-                        environment.output.out("backup: " + backup)
-                    }
-                    environment.output.out("WallpaperAgent restarted; switch Spaces to confirm")
+                    reportSync(result, environment)
                 }
                 return CLIExit.success.rawValue
             }
@@ -296,19 +316,63 @@ public struct CLI {
                                                                         withPad: " ",
                                                                         startingAt: 0) + when)
                 }
-                let overrides = summaries.filter { !$0.isDefault && !$0.matchesDefault }.count
-                if overrides > 0 {
+                let live = Set(WallpaperStore.liveSpaceUUIDs())
+                let existing = Set(summaries.filter { !$0.isDefault }.map(\.key))
+                let missing = live.subtracting(existing).sorted()
+                let stale = existing.subtracting(live).sorted()
+                let differing = summaries.filter { !$0.isDefault && !$0.matchesDefault }.count
+
+                environment.output.out("")
+                environment.output.out("mode: " + (settings.spaces == .all
+                    ? "on  - every Space is updated when you apply"
+                    : "off - only the Space you are on is updated"))
+                if live.isEmpty {
+                    environment.output.out("could not read com.apple.spaces, so Space status is unknown")
+                } else {
+                    environment.output.out("live Spaces: \(live.count)"
+                                           + ", with a store entry: \(live.intersection(existing).count)")
+                    for uuid in missing {
+                        environment.output.out("  no entry:    " + uuid)
+                    }
+                }
+                if !stale.isEmpty {
+                    environment.output.out("stale entries for removed Spaces: \(stale.count)")
+                    for uuid in stale {
+                        environment.output.out("  stale:       " + uuid)
+                    }
+                }
+                if !missing.isEmpty || differing > 0 {
                     environment.output.out("")
-                    environment.output.out("\(overrides) Space(s) still show a different wallpaper; "
-                                           + "'walle spaces all' makes them match")
+                    environment.output.out("'walle spaces all' gives every Space the same wallpaper"
+                                           + (stale.isEmpty ? "" : ", and --prune drops the stale entries"))
                 } else {
                     environment.output.out("")
-                    environment.output.out("every Space shows the same wallpaper")
+                    environment.output.out("every live Space shows the same wallpaper")
                 }
             }
             return CLIExit.success.rawValue
         } catch {
             throw CLIError("\(error)")
+        }
+    }
+
+    /// Reports what a sync did, in the same words whether it came from "spaces on" or
+    /// "spaces all".
+    static func reportSync(_ result: WallpaperStore.SyncResult, _ environment: CLIEnvironment) {
+        if !result.changedAnything {
+            environment.output.out("every Space already shows the same wallpaper")
+        } else {
+            for key in result.created { environment.output.out("added   Space " + key) }
+            for key in result.updated { environment.output.out("updated Space " + key) }
+            for key in result.pruned { environment.output.out("removed stale entry " + key) }
+            if let backup = result.backupPath { environment.output.out("backup: " + backup) }
+            environment.output.out("WallpaperAgent restarted; switch Spaces to confirm")
+        }
+        if !result.stale.isEmpty && result.pruned.isEmpty {
+            environment.output.out("note: \(result.stale.count) store entr"
+                                   + (result.stale.count == 1 ? "y is" : "ies are")
+                                   + " for Spaces that no longer exist; "
+                                   + "'walle spaces all --prune' removes them")
         }
     }
 
@@ -354,11 +418,14 @@ public struct CLI {
           history --clear            Forget everything
 
         SPACES
-          spaces                     Show which Spaces have their own wallpaper
-          spaces all                 Copy the default wallpaper onto every Space
+          spaces                     Show the mode, the live Spaces and the stale entries
+          spaces on                  Apply every wallpaper to every Space from now on
+          spaces off                 Only change the Space you are on (the default)
+          spaces all                 Copy the current wallpaper onto every Space now
+          spaces all --prune         Also drop entries for Spaces you have deleted
 
           macOS stores the desktop picture per Space, and its public API can only
-          write the one you are looking at. "spaces all" makes them match.
+          write the one you are looking at. These commands work around that.
 
         CONFIGURATION
           config list                Print every setting
