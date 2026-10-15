@@ -34,9 +34,13 @@ that stays resident whether you are using it or not. walle is the opposite:
 **Resting.** Five cards side by side, each a parallelogram leaning left, all fully opaque. The
 centred card is taller than the rest and carries a thin orange border.
 
+![The resting row: five slanted wallpaper cards, the centred one taller and outlined in orange](docs/resting.gif)
+
 **Preview.** The centred card straightens into a rounded rectangle showing the wallpaper
 undistorted. It is deliberately *shorter* than its neighbours, which slide outward and fade to
 6% so nothing competes with the preview.
+
+![The centred card straightening into an undistorted preview while its neighbours fade out](docs/preview.gif)
 
 The two states are 350 ms apart, with width, skew and height animating together so it reads as
 one shape changing.

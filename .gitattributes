@@ -1,0 +1,10 @@
+# Git attributes for walle.
+#
+# `git archive` honours export-ignore, so anything listed here stays in the
+# repository (and therefore renders on GitHub) but is left out of release
+# tarballs. That matters because the release archive is what a packager
+# downloads: the README's demo GIFs are ~10 MB and nothing needs them to build.
+#
+# Rebuild an archive with:
+#   git archive --format=tar.gz --prefix=walle-<version>/ -o walle-<version>.tar.gz <tag>
+docs/ export-ignore
