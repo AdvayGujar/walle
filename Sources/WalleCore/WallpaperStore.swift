@@ -128,6 +128,12 @@ public enum WallpaperStore {
     /// applying still returns the PREVIOUS wallpaper. Copying that over every Space is
     /// indistinguishable from "applying did nothing at all", which is exactly the symptom.
     static func desktopNode(forPath path: String, using template: [String: Any]) -> [String: Any]? {
+        // If it already points at this path, hand back the node untouched. Rebuilding an
+        // identical Configuration does not reliably produce identical bytes, so without this the
+        // sync would rewrite Spaces that already showed the right wallpaper.
+        if imagePath(ofDesktop: template) == URL(fileURLWithPath: path).path {
+            return template
+        }
         guard let content = template["Content"] as? [String: Any],
               var choices = content["Choices"] as? [[String: Any]],
               !choices.isEmpty else { return nil }
@@ -143,7 +149,9 @@ public enum WallpaperStore {
         newContent["Choices"] = choices
         var node = template
         node["Content"] = newContent
-        node["LastSet"] = Date()
+        // Deliberately keep the template's LastSet. Stamping a fresh timestamp on every call
+        // made the result differ from what was already stored, so the sync never recognised an
+        // already-matching Space and rewrote everything on every run.
         return node
     }
 
