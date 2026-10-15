@@ -120,6 +120,33 @@ public enum WallpaperStore {
         return imagePath(ofDesktop: desktopNode)
     }
 
+    /// A Desktop node pointing at `path`, reusing the option values (crop, colour, placement)
+    /// from `template` and replacing only the image reference.
+    ///
+    /// This is what makes the sync correct rather than merely plausible.
+    /// §setDesktopImageURL§ persists asynchronously, so reading the store immediately after
+    /// applying still returns the PREVIOUS wallpaper. Copying that over every Space is
+    /// indistinguishable from "applying did nothing at all", which is exactly the symptom.
+    static func desktopNode(forPath path: String, using template: [String: Any]) -> [String: Any]? {
+        guard let content = template["Content"] as? [String: Any],
+              var choices = content["Choices"] as? [[String: Any]],
+              !choices.isEmpty else { return nil }
+        let reference: [String: Any] = ["type": "imageFile",
+                                        "url": ["relative": URL(fileURLWithPath: path).absoluteString]]
+        guard let configuration = try? PropertyListSerialization.data(
+            fromPropertyList: reference, format: .binary, options: 0) else { return nil }
+
+        choices[0]["Configuration"] = configuration
+        choices[0]["Files"] = choices[0]["Files"] ?? [Any]()
+        choices[0]["Provider"] = "com.apple.wallpaper.choice.image"
+        var newContent = content
+        newContent["Choices"] = choices
+        var node = template
+        node["Content"] = newContent
+        node["LastSet"] = Date()
+        return node
+    }
+
     /// Which Space's entry to copy from.
     ///
     /// The default is NOT reliable as a source. Once each Space has its own entry,
@@ -299,8 +326,15 @@ public enum WallpaperStore {
         }
         guard let sourceKey = sourceSpaceKey(for: sourcePath, in: spaces),
               let sourceSpaceEntry = spaces[sourceKey] as? [String: Any],
-              let sourceDesktop = sourceSpaceEntry["Default"] as? [String: Any] else {
+              var sourceDesktop = sourceSpaceEntry["Default"] as? [String: Any] else {
             throw StoreError.unexpectedShape("no Space entry to copy from")
+        }
+
+        // When we know which wallpaper was just applied, build the entry from that path rather
+        // than trusting the store, which may not have caught up yet.
+        if let sourcePath,
+           let built = desktopNode(forPath: sourcePath, using: sourceDesktop) {
+            sourceDesktop = built
         }
 
         // Which Spaces exist. Falling back to the store's own keys keeps this working on a
@@ -401,7 +435,11 @@ public enum WallpaperStore {
 
     /// WallpaperAgent caches the store, so it has to be restarted for a direct write to show.
     /// Failure is not fatal: the store is already written and will be read on next login.
+    ///
+    /// The pause matters. Restarting the agent instantly after §setDesktopImageURL§ races the
+    /// write that the call just queued, and can lose the wallpaper that was being applied.
     static func restartWallpaperAgent() {
+        Thread.sleep(forTimeInterval: 0.4)
         let kill = Process()
         kill.executableURL = URL(fileURLWithPath: "/usr/bin/killall")
         kill.arguments = ["WallpaperAgent"]
