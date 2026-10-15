@@ -155,6 +155,35 @@ public enum WallpaperStore {
         return node
     }
 
+    /// Copies the source wallpaper onto a Space entry: its Default node and, critically, every
+    /// per-display Displays node.
+    ///
+    /// macOS renders a Space's picture from Displays[<display>] when that entry exists, with
+    /// Default only as the fallback for displays without their own entry. Syncing Default alone
+    /// therefore leaves every other Space showing its old picture: the per-display entry still
+    /// points at the previous wallpaper, and switching to the Space reads that stale entry (and
+    /// rewrites Default back to match it). This is why the store said "updated Space" while the
+    /// other desktops looked unchanged.
+    static func syncedEntry(_ entry: [String: Any],
+                            defaultNode: [String: Any],
+                            desktopNode: [String: Any]?) -> [String: Any] {
+        var result = entry
+        result["Default"] = defaultNode
+        if let desktopNode, let displays = entry["Displays"] as? [String: Any] {
+            var synced: [String: Any] = [:]
+            for (displayKey, displayValue) in displays {
+                if var displayEntry = displayValue as? [String: Any] {
+                    displayEntry["Desktop"] = desktopNode
+                    synced[displayKey] = displayEntry
+                } else {
+                    synced[displayKey] = displayValue
+                }
+            }
+            result["Displays"] = synced
+        }
+        return result
+    }
+
     /// Which Space's entry to copy from.
     ///
     /// The default is NOT reliable as a source. Once each Space has its own entry,
@@ -315,6 +344,25 @@ public enum WallpaperStore {
         return found.sorted()
     }
 
+    /// Waits until the store is written again after `afterDate`, or `timeout` elapses.
+    ///
+    /// `setDesktopImageURL` persists asynchronously, and the system's write lands a beat after
+    /// the call returns. When we know which wallpaper was just applied, syncing before that
+    /// write has landed means OUR write gets overwritten by the system's delayed write a moment
+    /// later — reverting every Space except the one the user is on. Watching the store's
+    /// modification time advance is the reliable signal that the system's write has landed.
+    static func waitForStoreWrite(after afterDate: Date, at url: URL, timeout: TimeInterval = 2.0) {
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            if let attrs = try? FileManager.default.attributesOfItem(atPath: url.path),
+               let modified = attrs[.modificationDate] as? Date,
+               modified > afterDate {
+                return
+            }
+            Thread.sleep(forTimeInterval: 0.05)
+        }
+    }
+
     /// Copies the current desktop picture onto every Space.
     ///
     /// This is the only way to get one wallpaper across every Space: the public API offers no
@@ -365,7 +413,7 @@ public enum WallpaperStore {
         // Compare with NSDictionary's deep equality. Serialising and comparing bytes would be
         // wrong: two equal dictionaries routinely produce different bytes, because property
         // list key order is not fixed. That bug made the sync non-idempotent.
-        let wanted = sourceDesktop as NSDictionary
+        let sourceDesktopNode = sourceDesktop["Desktop"] as? [String: Any]
 
         var updated: [String] = []
         var created: [String] = []
@@ -373,22 +421,23 @@ public enum WallpaperStore {
         var newSpaces = spaces
 
         for key in wantedKeys.sorted() {
-            guard var entry = spaces[key] as? [String: Any] else {
+            guard let entry = spaces[key] as? [String: Any] else {
                 // This Space exists but the store has never heard of it, so clone the source
                 // entry wholesale: it already has precisely the shape macOS expects.
                 newSpaces[key] = sourceSpaceEntry
                 created.append(key)
                 continue
             }
-            // Compare as property lists rather than by identity, so a Space that already
-            // matches is left completely alone and only genuinely stale ones are rewritten.
-            if let existing = entry["Default"] as? [String: Any],
-               (existing as NSDictionary).isEqual(wanted) {
+            // Rebuild the whole entry — Default AND every per-display Displays node — and
+            // compare against what is already there, so a Space is only skipped when both its
+            // Default and its per-display wallpaper already match.
+            let synced = syncedEntry(entry, defaultNode: sourceDesktop,
+                                     desktopNode: sourceDesktopNode)
+            if (synced as NSDictionary).isEqual(entry as NSDictionary) {
                 alreadyMatching.append(key)
                 continue
             }
-            entry["Default"] = sourceDesktop
-            newSpaces[key] = entry
+            newSpaces[key] = synced
             updated.append(key)
         }
 

@@ -11,11 +11,11 @@ macOS has nothing like those tools. The built-in route is System Settings, which
 Every third-party wallpaper app is a GUI with a menu bar icon, a preferences pane, and a process
 that stays resident whether you are using it or not. walle is the opposite:
 
-- **Two small binaries** — 392 KB and 523 KB, no dependencies, nothing installed at runtime
+- **Two small binaries** — 484 KB and 616 KB, no dependencies, nothing installed at runtime
 - **No UI besides the picker** — no dock icon, no menu bar item, no preferences window
 - **No background process** — zero processes and zero CPU when the picker is closed
 - **Keyboard first** — configured from the command line, driven from the keyboard
-- **Quick** — ~130 ms from hotkey to window, ~47 MB while open
+- **Quick** — ~170 ms from hotkey to window, ~85 MB while open
 
 ### Coming from a Linux setup
 
@@ -138,8 +138,10 @@ you are looking at. See [Wallpapers and Spaces](#wallpapers-and-spaces) below.
 
     walle history [--limit N] [--clear]
 
-    walle spaces                Show which Spaces have their own wallpaper
-    walle spaces all            Copy the current wallpaper onto every Space
+    walle spaces                Show the mode, live Spaces and stale entries
+    walle spaces on | off       Apply every wallpaper to every Space, or not
+    walle spaces all            Copy the current wallpaper onto every Space now
+    walle spaces all --prune    Also drop entries for Spaces you deleted
 
     walle config list|get|set|unset|edit|path
     walle doctor                Check the install end to end
@@ -161,7 +163,10 @@ If you would rather one wallpaper covered every Space, turn that on once:
     walle spaces off    # back to only changing the Space you are on (the default)
 
 `spaces on` brings the Spaces you already have into line immediately, and remembers the setting
-in your config file as `spaces = all`.
+in your config file as `spaces = all`. It then covers every apply path: the picker (including the
+hotkey), `walle set`, and `next` / `prev` / `random`. Because macOS persists a wallpaper change
+asynchronously, the sync waits for the system's own write to land before it copies the wallpaper
+to the other Spaces, so the result is not reverted a moment later.
 
     walle spaces               # the mode, the live Spaces, and any stale entries
     walle spaces all           # sync now, without changing the mode
@@ -304,20 +309,24 @@ decoded.
 
 ## Performance
 
-On Apple silicon with a 1512x982 Retina display and a 5-image library:
+On Apple silicon with a 1512x982 Retina display and a 5-image library (re-measured after the
+Spaces work):
 
 | Metric | Value |
 | --- | --- |
-| `walle` binary, stripped | 392 KB |
-| `walle-picker` binary, stripped | 523 KB |
-| CLI start | < 10 ms |
-| Picker: process start to window | ~130 ms |
-| Peak memory | ~47 MB |
+| `walle` binary, stripped | 484 KB |
+| `walle-picker` binary, stripped | 616 KB |
+| CLI start | ~10 ms |
+| Picker: process start to window | ~170 ms |
+| Peak memory | ~85 MB picker, ~7 MB CLI |
 | Processes alive when closed | 0 |
 
 About 65 ms of the cold start is the OS loading AppKit before any walle code runs, and about
 22 MB of the memory is the full-screen Retina backing store needed to dim the screen. Both are
-inherent to being a full-screen overlay.
+inherent to being a full-screen overlay. The rest of the memory is decoded thumbnails: this
+display's card geometry requires 1837-px thumbnails, and several are resident at once. The Spaces
+feature itself runs in the `walle` CLI process, not the picker, so it does not affect these
+numbers.
 
 ---
 

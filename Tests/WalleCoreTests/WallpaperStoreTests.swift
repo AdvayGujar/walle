@@ -79,6 +79,65 @@ struct WallpaperStoreTests {
         #expect(try WallpaperStore.defaultImagePath(at: url) == "/tmp/shared.jpg")
     }
 
+    @Test("sync updates each Space's per-display entry, not just Default")
+    func syncsPerDisplayEntries() throws {
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("walle-store-" + UUID().uuidString)
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let url = dir.appendingPathComponent("Index.plist")
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        func desktop(_ name: String, at date: Date) -> [String: Any] {
+            let inner: [String: Any] = ["type": "imageFile",
+                                        "url": ["relative": "file:///tmp/" + name]]
+            let config = try! PropertyListSerialization.data(
+                fromPropertyList: inner, format: .binary, options: 0)
+            return ["Content": ["Choices": [["Configuration": config,
+                                             "Files": [Any](),
+                                             "Provider": "com.apple.wallpaper.choice.image"]]],
+                    "LastSet": date]
+        }
+
+        // Each Space carries a per-display entry. This is the part of the real store that a
+        // sync must also rewrite, or the Space keeps showing its old picture when switched to.
+        func spaceEntry(_ name: String, at date: Date) -> [String: Any] {
+            ["Default": ["Desktop": desktop(name, at: date)],
+             "Displays": ["DISPLAY-1": ["Desktop": desktop(name, at: date),
+                                        "Type": "individual"]],
+             "Type": "individual"]
+        }
+
+        let now = Date()
+        let root: [String: Any] = [
+            "Spaces": [
+                "": spaceEntry("shared.jpg", at: now),
+                "SPACE-A": spaceEntry("old-a.jpg", at: now.addingTimeInterval(-60)),
+                "SPACE-B": spaceEntry("old-b.jpg", at: now.addingTimeInterval(-120)),
+            ],
+        ]
+        let data = try! PropertyListSerialization.data(fromPropertyList: root,
+                                                       format: .binary, options: 0)
+        try! data.write(to: url)
+
+        let result = try WallpaperStore.applyDefaultToAllSpaces(
+            at: url, liveSpaces: ["SPACE-A", "SPACE-B"], sourcePath: "/tmp/shared.jpg")
+        #expect(result.updated.sorted() == ["SPACE-A", "SPACE-B"])
+
+        // Both the Default node and the per-display node must now point at the new wallpaper.
+        let after = try Data(contentsOf: url)
+        let afterRoot = try PropertyListSerialization.propertyList(
+            from: after, options: [], format: nil) as? [String: Any]
+        let spaces = afterRoot?["Spaces"] as? [String: Any]
+        for key in ["SPACE-A", "SPACE-B"] {
+            let entry = spaces?[key] as? [String: Any]
+            let defaultDesktop = (entry?["Default"] as? [String: Any])?["Desktop"] as? [String: Any]
+            let displayDesktop = ((entry?["Displays"] as? [String: Any])?["DISPLAY-1"]
+                as? [String: Any])?["Desktop"] as? [String: Any]
+            #expect(WallpaperStore.imagePath(ofDesktop: defaultDesktop!) == "/tmp/shared.jpg")
+            #expect(WallpaperStore.imagePath(ofDesktop: displayDesktop!) == "/tmp/shared.jpg")
+        }
+    }
+
     @Test("sync is idempotent")
     func syncIsIdempotent() throws {
         let (url, dir) = makeStore()

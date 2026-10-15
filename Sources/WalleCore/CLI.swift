@@ -759,15 +759,33 @@ public struct CLI {
         // With "spaces = all", bring the other Spaces into line HERE rather than inside the
         // picker. macOS persists a wallpaper change asynchronously, so syncing from inside the
         // picker raced the very apply that had just been made and lost: the system's write
-        // landed afterwards and overwrote it. Now the picker has exited and the store already
-        // holds the new wallpaper for the current Space, so copying the newest entry is safe.
-        if process.terminationStatus == CLIExit.success.rawValue {
+        // landed afterwards and overwrote it.
+        //
+        // Copying the store's "most recent" entry here has the SAME race: the picker has exited
+        // but its store write may not have landed yet, so the most recent entry is still the
+        // PREVIOUS wallpaper. The sync then looks like a no-op (everything already matches the
+        // stale entry) and the delayed write lands afterwards, changing only the current Space.
+        // So instead read the path the picker itself recorded to the state file just before it
+        // exited (walleRecordApplied), and sync from that — it is the wallpaper the user actually
+        // picked, independent of whether the store has caught up. "--current" only reads and
+        // never applies, so it must not trigger a sync at all.
+        if process.terminationStatus == CLIExit.success.rawValue,
+           arguments.first != "--current" {
             let (settings, _) = loadConfig(environment)
             if settings.spaces == .all {
+                let appliedPath = StateStore(fileURL: environment.paths.stateFile)
+                    .load().lastAppliedPath
+                // macOS persists the apply asynchronously, and that write lands a beat after
+                // the picker exits. Wait for it (the store's mtime advancing) so our own sync
+                // write below is not overwritten by it — which reverted every other Space.
+                WallpaperStore.waitForStoreWrite(
+                    after: Date(),
+                    at: WallpaperStore.indexURL(environment: environment.environment))
                 do {
                     let result = try WallpaperStore.applyDefaultToAllSpaces(
                         at: WallpaperStore.indexURL(environment: environment.environment),
-                        liveSpaces: WallpaperStore.liveSpaceUUIDs())
+                        liveSpaces: WallpaperStore.liveSpaceUUIDs(),
+                        sourcePath: appliedPath)
                     if settings.logLevel != "silent" {
                         reportSync(result, environment)
                     }
