@@ -442,7 +442,12 @@ public enum WallpaperStore {
         Thread.sleep(forTimeInterval: 0.4)
         let kill = Process()
         kill.executableURL = URL(fileURLWithPath: "/usr/bin/killall")
-        kill.arguments = ["WallpaperAgent"]
+        // SIGKILL, deliberately, not the default SIGTERM. Asked politely, WallpaperAgent flushes
+        // its in-memory wallpaper state back over the file on the way out — which silently
+        // undid every Space we had just written, leaving the store byte-identical to our backup
+        // with the original timestamps. Killed outright it cannot flush, and the copy launchd
+        // starts reads the store we just wrote.
+        kill.arguments = ["-9", "WallpaperAgent"]
         kill.standardOutput = FileHandle.nullDevice
         kill.standardError = FileHandle.nullDevice
         try? kill.run()
