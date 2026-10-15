@@ -332,9 +332,14 @@ public enum WallpaperStore {
 
         // When we know which wallpaper was just applied, build the entry from that path rather
         // than trusting the store, which may not have caught up yet.
+        // sourceDesktop is a DEFAULT node, whose image lives one level down under "Desktop".
+        // Passing it straight to desktopNode found no "Content" and returned nil, so the sync
+        // silently fell back to copying whatever the store already held — overwriting the
+        // wallpaper that had just been applied, on every Space including the current one.
         if let sourcePath,
-           let built = desktopNode(forPath: sourcePath, using: sourceDesktop) {
-            sourceDesktop = built
+           let template = sourceDesktop["Desktop"] as? [String: Any],
+           let built = desktopNode(forPath: sourcePath, using: template) {
+            sourceDesktop["Desktop"] = built
         }
 
         // Which Spaces exist. Falling back to the store's own keys keeps this working on a
