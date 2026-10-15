@@ -755,6 +755,28 @@ public struct CLI {
                 environment.output.err(String(line))
             }
         }
+
+        // With "spaces = all", bring the other Spaces into line HERE rather than inside the
+        // picker. macOS persists a wallpaper change asynchronously, so syncing from inside the
+        // picker raced the very apply that had just been made and lost: the system's write
+        // landed afterwards and overwrote it. Now the picker has exited and the store already
+        // holds the new wallpaper for the current Space, so copying the newest entry is safe.
+        if process.terminationStatus == CLIExit.success.rawValue {
+            let (settings, _) = loadConfig(environment)
+            if settings.spaces == .all {
+                do {
+                    let result = try WallpaperStore.applyDefaultToAllSpaces(
+                        at: WallpaperStore.indexURL(environment: environment.environment),
+                        liveSpaces: WallpaperStore.liveSpaceUUIDs())
+                    if settings.logLevel != "silent" {
+                        reportSync(result, environment)
+                    }
+                } catch {
+                    environment.output.err("walle: the wallpaper was applied, but not to every "
+                                           + "Space: " + String(describing: error))
+                }
+            }
+        }
         return process.terminationStatus
     }
 

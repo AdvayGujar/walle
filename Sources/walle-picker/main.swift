@@ -151,9 +151,6 @@ case "--apply":
         writeError(String(describing: error))
         exit(1)
     }
-    if let warning = WallpaperStore.syncIfEnabled(config.spaces, appliedPath: url.path) {
-        writeError(warning)
-    }
 
     // Recording happens only after the desktop actually changed, and a failure here is
     // reported rather than swallowed.
