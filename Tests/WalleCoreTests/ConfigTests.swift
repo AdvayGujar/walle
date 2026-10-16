@@ -219,6 +219,57 @@ struct ConfigTests {
         }
     }
 
+    @Test func savePreservingStructureKeepsCommentsAndUnknownLines() throws {
+        try withTempDirectory { dir in
+            let url = dir.appendingPathComponent("config")
+            try Data("""
+            # my notes
+            slots = 5
+
+            # geometry
+            card_width = 280
+            type_to_filter = true
+            """.utf8).write(to: url)
+
+            var config = Config()
+            config.slots = 7
+            config.cardWidth = 300
+            try config.save(to: url, updating: ["slots", "not_a_real_key"])
+
+            let text = String(data: try Data(contentsOf: url), encoding: .utf8) ?? ""
+            #expect(text.contains("# my notes"))
+            #expect(text.contains("# geometry"))
+            #expect(text.contains("type_to_filter = true"))
+            #expect(text.contains("slots = 7"))
+            // A key that was not asked for is untouched, and an unknown key is rejected.
+            #expect(text.contains("card_width = 280"))
+            #expect(!text.contains("not_a_real_key"))
+        }
+    }
+
+    @Test func savePreservingStructureAppendsMissingKeysAndCreatesMissingFile() throws {
+        try withTempDirectory { dir in
+            let url = dir.appendingPathComponent("config")
+            try Data("# nothing here\n".utf8).write(to: url)
+
+            var config = Config()
+            config.sort = .mtime
+            try config.save(to: url, updating: ["sort"])
+
+            let text = String(data: try Data(contentsOf: url), encoding: .utf8) ?? ""
+            #expect(text.contains("# nothing here"))
+            #expect(text.contains("sort = mtime"))
+
+            // A missing file still gets a complete, loadable config.
+            let fresh = dir.appendingPathComponent("fresh")
+            try config.save(to: fresh, updating: ["sort"])
+            let freshText = String(data: try Data(contentsOf: fresh), encoding: .utf8) ?? ""
+            #expect(freshText.contains("wallpaper_dirs = "))
+            #expect(freshText.contains("sort = mtime"))
+            #expect(Config.parse(freshText).warnings.isEmpty)
+        }
+    }
+
     @Test func loadFromMissingFileReturnsDefaultsQuietly() throws {
         try withTempDirectory { dir in
             let (config, warnings) = Config.load(from: dir.appendingPathComponent("missing"))

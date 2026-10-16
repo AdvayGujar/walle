@@ -255,7 +255,8 @@ if you want more resolution than the geometry requires.
 
 **On the config file:** it is written once by the installer and is authoritative from then on,
 so changing a default in a new version will not reach it. That is deliberate — your settings
-survive upgrades.
+survive upgrades. Editing commands (`config set/unset`, `dir add/remove/use`) change only the
+line for the setting involved, so comments and your own key order survive too.
 
 ---
 
@@ -320,7 +321,7 @@ decoded.
     Sources/WalleKit/      AppKit: window, cards, corridor
     Sources/walle/         CLI executable
     Sources/walle-picker/  GUI executable
-    Tests/WalleCoreTests/  116 tests in 13 suites
+    Tests/WalleCoreTests/  118 tests in 13 suites
     scripts/               swift.sh, build.sh, install.sh, uninstall.sh
     tools/                 offscreen geometry diagnostics
 
@@ -351,7 +352,7 @@ numbers.
 
 ## Development
 
-    ./scripts/swift.sh test              # 116 tests in 13 suites
+    ./scripts/swift.sh test              # 118 tests in 13 suites
     ./scripts/swift.sh build -c release
     ./scripts/clean.sh                   # reclaim disk
 

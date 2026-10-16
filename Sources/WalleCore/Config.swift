@@ -318,6 +318,25 @@ public struct Config: Sendable, Equatable {
         try Data(serialized().utf8).write(to: url, options: .atomic)
     }
 
+    /// Writes the config while preserving the structure of an existing file.
+    ///
+    /// `save(to:)` serialises the whole Config from scratch, which is right when creating a
+    /// fresh file but destroys any comment or hand-written line the user added. Editing
+    /// commands (`config set/unset`, `dir add/remove/use`) use this instead: only the
+    /// lines for `keys` are rewritten, or appended when absent, and every other line —
+    /// comments, blank lines, unknown keys, the user's own key order — is left as it was.
+    public func save(to url: URL, updating keys: Set<String>, fileManager: FileManager = .default) throws {
+        try fileManager.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        guard let data = fileManager.contents(atPath: url.path),
+              let text = String(data: data, encoding: .utf8) else {
+            // No file yet: there is no structure to preserve, so write a complete one.
+            try save(to: url, fileManager: fileManager)
+            return
+        }
+        try Data(wallePatchConfigText(text, with: self, updating: keys).utf8)
+            .write(to: url, options: .atomic)
+    }
+
     public func sanitized() -> (config: Config, warnings: [String]) {
         var c = self
         var warnings: [String] = []
@@ -394,6 +413,27 @@ private func walleJoinPathList(_ paths: [String]) -> String {
         path.replacingOccurrences(of: "\\", with: "\\\\")
             .replacingOccurrences(of: ":", with: "\\:")
     }.joined(separator: ":")
+}
+
+/// Rewrites the `key = value` lines named in `keys`, leaving every other line exactly
+/// as it was, and appends any named key that is missing. Keys this Config does not know
+/// are ignored, so a caller cannot inject arbitrary lines.
+private func wallePatchConfigText(_ text: String, with config: Config, updating keys: Set<String>) -> String {
+    var lines = text.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
+    var remaining = keys
+    for index in lines.indices {
+        let trimmed = lines[index].trimmingCharacters(in: .whitespaces)
+        guard !trimmed.isEmpty, !trimmed.hasPrefix("#"),
+              let equals = trimmed.firstIndex(of: "=") else { continue }
+        let key = trimmed[..<equals].trimmingCharacters(in: .whitespaces)
+        guard keys.contains(key), Config.keyOrder.contains(key) else { continue }
+        lines[index] = key + " = " + (config.value(forKey: key) ?? "")
+        remaining.remove(key)
+    }
+    for key in Config.keyOrder where remaining.contains(key) {
+        lines.append(key + " = " + (config.value(forKey: key) ?? ""))
+    }
+    return lines.joined(separator: "\n")
 }
 
 private func parseBool(_ raw: String) -> Bool? {

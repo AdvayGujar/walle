@@ -663,7 +663,7 @@ public struct CLI {
         }
 
         config.wallpaperDirs.append(root)
-        try config.save(to: environment.paths.configFile)
+        try config.save(to: environment.paths.configFile, updating: ["wallpaper_dirs"])
 
         if options.has("json") {
             try emitJSON(["added": root, "path": resolved, "created": created,
@@ -691,7 +691,7 @@ public struct CLI {
         guard config.wallpaperDirs.count < before else {
             throw CLIError("not a configured directory: \(target)")
         }
-        try config.save(to: environment.paths.configFile)
+        try config.save(to: environment.paths.configFile, updating: ["wallpaper_dirs"])
 
         if options.has("json") {
             try emitJSON(["removed": target, "roots": config.wallpaperDirs], to: environment)
@@ -714,7 +714,7 @@ public struct CLI {
         }
         var (config, _) = loadConfig(environment)
         config.wallpaperDirs = [root]
-        try config.save(to: environment.paths.configFile)
+        try config.save(to: environment.paths.configFile, updating: ["wallpaper_dirs"])
 
         if options.has("json") {
             try emitJSON(["roots": config.wallpaperDirs], to: environment)
@@ -1231,7 +1231,7 @@ public struct CLI {
         }
         // Validation runs on the way out so the file on disk is always usable.
         let (clean, warnings) = config.sanitized()
-        try clean.save(to: environment.paths.configFile)
+        try clean.save(to: environment.paths.configFile, updating: [key])
         if options.has("json") {
             try emitJSON(["key": key, "value": clean.value(forKey: key) ?? "",
                           "warnings": warnings], to: environment)
@@ -1253,7 +1253,7 @@ public struct CLI {
         }
         var (config, _) = loadConfig(environment)
         _ = config.apply(key: key, value: defaultValue)
-        try config.save(to: environment.paths.configFile)
+        try config.save(to: environment.paths.configFile, updating: [key])
         if options.has("json") {
             try emitJSON(["key": key, "value": config.value(forKey: key) ?? ""], to: environment)
         } else {
