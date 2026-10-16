@@ -320,7 +320,7 @@ decoded.
     Sources/WalleKit/      AppKit: window, cards, corridor
     Sources/walle/         CLI executable
     Sources/walle-picker/  GUI executable
-    Tests/WalleCoreTests/  106 tests
+    Tests/WalleCoreTests/  117 tests in 13 suites
     scripts/               swift.sh, build.sh, install.sh, uninstall.sh
     tools/                 offscreen geometry diagnostics
 
@@ -351,7 +351,7 @@ numbers.
 
 ## Development
 
-    ./scripts/swift.sh test              # 106 tests
+    ./scripts/swift.sh test              # 117 tests in 13 suites
     ./scripts/swift.sh build -c release
     ./scripts/clean.sh                   # reclaim disk
 

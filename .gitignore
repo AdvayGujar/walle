@@ -4,3 +4,6 @@ dist/
 
 # macOS
 .DS_Store
+
+# local review notes (not for commit)
+optimization.md
