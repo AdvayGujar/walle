@@ -8,14 +8,12 @@ public struct WallePaths: Sendable, Equatable {
     public var configFile: URL
     public var dataDir: URL
     public var cacheDir: URL
-    public var logFile: URL
 
-    public init(home: URL, configFile: URL, dataDir: URL, cacheDir: URL, logFile: URL) {
+    public init(home: URL, configFile: URL, dataDir: URL, cacheDir: URL) {
         self.home = home
         self.configFile = configFile
         self.dataDir = dataDir
         self.cacheDir = cacheDir
-        self.logFile = logFile
     }
 
     public static func resolve(
@@ -46,24 +44,14 @@ public struct WallePaths: Sendable, Equatable {
             ?? xdgCache.map { URL(fileURLWithPath: $0).appendingPathComponent("walle") }
             ?? homeURL.appendingPathComponent("Library/Caches/walle")
 
-        let logFile = value("WALLE_LOG").map(expand)
-            ?? homeURL.appendingPathComponent("Library/Logs/walle.log")
-
         return WallePaths(home: homeURL, configFile: configFile, dataDir: dataDir,
-                          cacheDir: cacheDir, logFile: logFile)
+                          cacheDir: cacheDir)
     }
 
     public var thumbnailsDir: URL { cacheDir.appendingPathComponent("thumbs") }
     public var historyFile: URL { dataDir.appendingPathComponent("history.jsonl") }
     public var stateFile: URL { dataDir.appendingPathComponent("state.json") }
     public var lockFile: URL { dataDir.appendingPathComponent("picker.lock") }
-
-    public func ensureDirectories(fileManager: FileManager = .default) throws {
-        for dir in [configFile.deletingLastPathComponent(), dataDir, cacheDir, thumbnailsDir,
-                    logFile.deletingLastPathComponent()] {
-            try fileManager.createDirectory(at: dir, withIntermediateDirectories: true)
-        }
-    }
 }
 
 /// Expands a leading tilde and leaves everything else alone.

@@ -13,15 +13,22 @@ struct ConfigTests {
         #expect(parsed.serialized() == defaults.serialized())
     }
 
-    @Test func keyOrderIsUniqueAndEveryKeyIsHandled() {
+    @Test func keyOrderIsUniqueAndEveryKeyRoundTrips() {
         let keys = Config.keyOrder
         #expect(Set(keys).count == keys.count)
 
-        var config = Config()
+        // Every registered key must render a value and read its own text back unchanged.
+        // This is what keeps the single key table honest: a key whose getter and setter were
+        // written against different properties would otherwise only be caught by inspection.
+        let config = Config()
         for key in keys {
-            let value = config.value(forKey: key)
-            #expect(value != nil, "value(forKey:) missing for \(key)")
-            #expect(config.apply(key: key, value: value ?? "") == true, "apply missing for \(key)")
+            let original = config.value(forKey: key)
+            #expect(original != nil, "value(forKey:) missing for \(key)")
+            var roundTripped = config
+            #expect(roundTripped.apply(key: key, value: original ?? "") == true,
+                    "apply missing for \(key)")
+            #expect(roundTripped.value(forKey: key) == original,
+                    "round-trip changed \(key): \(original ?? "nil") -> \(roundTripped.value(forKey: key) ?? "nil")")
         }
     }
 
