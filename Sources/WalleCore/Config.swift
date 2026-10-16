@@ -77,7 +77,6 @@ public struct Config: Sendable, Equatable {
     public var spaces: SpacesMode
     public var thumbMaxPx: Int
     public var previewMaxPx: Int
-    public var typeToFilter: Bool
     public var logLevel: String
 
     public init(
@@ -108,7 +107,6 @@ public struct Config: Sendable, Equatable {
         spaces: SpacesMode = .current,
         thumbMaxPx: Int = 1600,
         previewMaxPx: Int = 1600,
-        typeToFilter: Bool = true,
         logLevel: String = "warn"
     ) {
         self.wallpaperDirs = wallpaperDirs
@@ -138,21 +136,109 @@ public struct Config: Sendable, Equatable {
         self.spaces = spaces
         self.thumbMaxPx = thumbMaxPx
         self.previewMaxPx = previewMaxPx
-        self.typeToFilter = typeToFilter
         self.logLevel = logLevel
     }
 
-    public static let keyOrder: [String] = [
-        "wallpaper_dirs", "recursive", "sort",
-        "design_width", "slots",
-        "card_width", "card_height", "card_gap", "selected_card_height",
-        "expanded_card_width", "expanded_card_height",
-        "card_skew", "card_corner_radius", "card_border_width", "card_border_color",
-        "row_center_y_frac", "dim_falloff", "dim_floor", "dim_alpha",
-        "expanded_neighbour_alpha",
-        "animation_ms", "expand_on_enter",
-        "apply_to", "fill_mode", "spaces", "thumb_max_px", "preview_max_px",
-        "type_to_filter", "log_level",
+    /// Every key, in the order it is written to the config file.
+    ///
+    /// This is the single place a key is registered: `apply(key:value:)` and
+    /// `value(forKey:)` are both driven by `keyTable`, so adding a setting means editing
+    /// the stored property (and its default in `init`) and adding one entry below — not the
+    /// four parallel switches this used to need. A round-trip test guards the table.
+    public static let keyOrder: [String] = keyTable.map(\.name)
+
+    /// One entry per config key: its name, how to render the current value, and how to apply
+    /// a raw string to it. `set` takes `inout` so a malformed value can leave the previous
+    /// value untouched — a typo must not reset a setting.
+    private static let keyTable: [ConfigKey] = [
+        ConfigKey(name: "wallpaper_dirs",
+                  get: { $0.wallpaperDirs.joined(separator: ":") },
+                  set: { config, value in
+                      config.wallpaperDirs = value.split(separator: ":")
+                          .map { String($0).trimmingCharacters(in: .whitespaces) }
+                          .filter { !$0.isEmpty }
+                  }),
+        ConfigKey(name: "recursive",
+                  get: { boolString($0.recursive) },
+                  set: { config, value in config.recursive = parseBool(value) ?? config.recursive }),
+        ConfigKey(name: "sort",
+                  get: { $0.sort.rawValue },
+                  set: { config, value in config.sort = SortMode.parse(value) ?? config.sort }),
+        ConfigKey(name: "design_width",
+                  get: { num($0.designWidth) },
+                  set: { config, value in config.designWidth = parseDouble(value) ?? config.designWidth }),
+        ConfigKey(name: "slots",
+                  get: { String($0.slots) },
+                  set: { config, value in config.slots = parseInt(value) ?? config.slots }),
+        ConfigKey(name: "card_width",
+                  get: { num($0.cardWidth) },
+                  set: { config, value in config.cardWidth = parseDouble(value) ?? config.cardWidth }),
+        ConfigKey(name: "card_height",
+                  get: { num($0.cardHeight) },
+                  set: { config, value in config.cardHeight = parseDouble(value) ?? config.cardHeight }),
+        ConfigKey(name: "card_gap",
+                  get: { num($0.cardGap) },
+                  set: { config, value in config.cardGap = parseDouble(value) ?? config.cardGap }),
+        ConfigKey(name: "selected_card_height",
+                  get: { num($0.selectedCardHeight) },
+                  set: { config, value in config.selectedCardHeight = parseDouble(value) ?? config.selectedCardHeight }),
+        ConfigKey(name: "expanded_card_width",
+                  get: { num($0.expandedCardWidth) },
+                  set: { config, value in config.expandedCardWidth = parseDouble(value) ?? config.expandedCardWidth }),
+        ConfigKey(name: "expanded_card_height",
+                  get: { num($0.expandedCardHeight) },
+                  set: { config, value in config.expandedCardHeight = parseDouble(value) ?? config.expandedCardHeight }),
+        ConfigKey(name: "card_skew",
+                  get: { num($0.cardSkew) },
+                  set: { config, value in config.cardSkew = parseDouble(value) ?? config.cardSkew }),
+        ConfigKey(name: "card_corner_radius",
+                  get: { num($0.cardCornerRadius) },
+                  set: { config, value in config.cardCornerRadius = parseDouble(value) ?? config.cardCornerRadius }),
+        ConfigKey(name: "card_border_width",
+                  get: { num($0.cardBorderWidth) },
+                  set: { config, value in config.cardBorderWidth = parseDouble(value) ?? config.cardBorderWidth }),
+        ConfigKey(name: "card_border_color",
+                  get: { $0.cardBorderColor },
+                  set: { config, value in config.cardBorderColor = value }),
+        ConfigKey(name: "row_center_y_frac",
+                  get: { num($0.rowCenterYFrac) },
+                  set: { config, value in config.rowCenterYFrac = parseDouble(value) ?? config.rowCenterYFrac }),
+        ConfigKey(name: "dim_falloff",
+                  get: { num($0.dimFalloff) },
+                  set: { config, value in config.dimFalloff = parseDouble(value) ?? config.dimFalloff }),
+        ConfigKey(name: "dim_floor",
+                  get: { num($0.dimFloor) },
+                  set: { config, value in config.dimFloor = parseDouble(value) ?? config.dimFloor }),
+        ConfigKey(name: "dim_alpha",
+                  get: { num($0.dimAlpha) },
+                  set: { config, value in config.dimAlpha = parseDouble(value) ?? config.dimAlpha }),
+        ConfigKey(name: "expanded_neighbour_alpha",
+                  get: { num($0.expandedNeighbourAlpha) },
+                  set: { config, value in config.expandedNeighbourAlpha = parseDouble(value) ?? config.expandedNeighbourAlpha }),
+        ConfigKey(name: "animation_ms",
+                  get: { num($0.animationMs) },
+                  set: { config, value in config.animationMs = parseDouble(value) ?? config.animationMs }),
+        ConfigKey(name: "expand_on_enter",
+                  get: { boolString($0.expandOnEnter) },
+                  set: { config, value in config.expandOnEnter = parseBool(value) ?? config.expandOnEnter }),
+        ConfigKey(name: "apply_to",
+                  get: { $0.applyTo.rawValue },
+                  set: { config, value in config.applyTo = ApplyTarget.parse(value) ?? config.applyTo }),
+        ConfigKey(name: "fill_mode",
+                  get: { $0.fillMode.rawValue },
+                  set: { config, value in config.fillMode = FillMode.parse(value) ?? config.fillMode }),
+        ConfigKey(name: "spaces",
+                  get: { $0.spaces.rawValue },
+                  set: { config, value in config.spaces = SpacesMode.parse(value) ?? config.spaces }),
+        ConfigKey(name: "thumb_max_px",
+                  get: { String($0.thumbMaxPx) },
+                  set: { config, value in config.thumbMaxPx = parseInt(value) ?? config.thumbMaxPx }),
+        ConfigKey(name: "preview_max_px",
+                  get: { String($0.previewMaxPx) },
+                  set: { config, value in config.previewMaxPx = parseInt(value) ?? config.previewMaxPx }),
+        ConfigKey(name: "log_level",
+                  get: { $0.logLevel },
+                  set: { config, value in config.logLevel = value }),
     ]
 
     public static func parse(_ text: String) -> (config: Config, warnings: [String]) {
@@ -174,79 +260,19 @@ public struct Config: Sendable, Equatable {
         return (config, warnings)
     }
 
+    /// Applies one `key = value` pair. Returns false for an unknown key, which the parser
+    /// turns into a warning, so a typo is not silently ignored.
     @discardableResult
     public mutating func apply(key: String, value: String) -> Bool {
-        switch key {
-        case "wallpaper_dirs":
-            wallpaperDirs = value.split(separator: ":").map { String($0).trimmingCharacters(in: .whitespaces) }
-                .filter { !$0.isEmpty }
-        case "recursive": recursive = parseBool(value) ?? recursive
-        case "sort": sort = SortMode.parse(value) ?? sort
-        case "design_width": designWidth = parseDouble(value) ?? designWidth
-        case "slots": slots = parseInt(value) ?? slots
-        case "card_width": cardWidth = parseDouble(value) ?? cardWidth
-        case "card_height": cardHeight = parseDouble(value) ?? cardHeight
-        case "card_gap": cardGap = parseDouble(value) ?? cardGap
-        case "selected_card_height": selectedCardHeight = parseDouble(value) ?? selectedCardHeight
-        case "expanded_card_width": expandedCardWidth = parseDouble(value) ?? expandedCardWidth
-        case "expanded_card_height": expandedCardHeight = parseDouble(value) ?? expandedCardHeight
-        case "card_skew": cardSkew = parseDouble(value) ?? cardSkew
-        case "card_corner_radius": cardCornerRadius = parseDouble(value) ?? cardCornerRadius
-        case "card_border_width": cardBorderWidth = parseDouble(value) ?? cardBorderWidth
-        case "card_border_color": cardBorderColor = value
-        case "row_center_y_frac": rowCenterYFrac = parseDouble(value) ?? rowCenterYFrac
-        case "dim_falloff": dimFalloff = parseDouble(value) ?? dimFalloff
-        case "dim_floor": dimFloor = parseDouble(value) ?? dimFloor
-        case "dim_alpha": dimAlpha = parseDouble(value) ?? dimAlpha
-        case "expanded_neighbour_alpha":
-            expandedNeighbourAlpha = parseDouble(value) ?? expandedNeighbourAlpha
-        case "animation_ms": animationMs = parseDouble(value) ?? animationMs
-        case "expand_on_enter": expandOnEnter = parseBool(value) ?? expandOnEnter
-        case "apply_to": applyTo = ApplyTarget.parse(value) ?? applyTo
-        case "fill_mode": fillMode = FillMode.parse(value) ?? fillMode
-        case "spaces": spaces = SpacesMode.parse(value) ?? spaces
-        case "thumb_max_px": thumbMaxPx = parseInt(value) ?? thumbMaxPx
-        case "preview_max_px": previewMaxPx = parseInt(value) ?? previewMaxPx
-        case "type_to_filter": typeToFilter = parseBool(value) ?? typeToFilter
-        case "log_level": logLevel = value
-        default: return false
-        }
+        guard let entry = Config.keyTable.first(where: { $0.name == key }) else { return false }
+        entry.set(&self, value)
         return true
     }
 
+    /// The current value of a key rendered exactly as `serialized()` writes it, or nil for
+    /// an unknown key.
     public func value(forKey key: String) -> String? {
-        switch key {
-        case "wallpaper_dirs": return wallpaperDirs.joined(separator: ":")
-        case "recursive": return boolString(recursive)
-        case "sort": return sort.rawValue
-        case "design_width": return num(designWidth)
-        case "slots": return String(slots)
-        case "card_width": return num(cardWidth)
-        case "card_height": return num(cardHeight)
-        case "card_gap": return num(cardGap)
-        case "selected_card_height": return num(selectedCardHeight)
-        case "expanded_card_width": return num(expandedCardWidth)
-        case "expanded_card_height": return num(expandedCardHeight)
-        case "card_skew": return num(cardSkew)
-        case "card_corner_radius": return num(cardCornerRadius)
-        case "card_border_width": return num(cardBorderWidth)
-        case "card_border_color": return cardBorderColor
-        case "row_center_y_frac": return num(rowCenterYFrac)
-        case "dim_falloff": return num(dimFalloff)
-        case "dim_floor": return num(dimFloor)
-        case "dim_alpha": return num(dimAlpha)
-        case "expanded_neighbour_alpha": return num(expandedNeighbourAlpha)
-        case "animation_ms": return num(animationMs)
-        case "expand_on_enter": return boolString(expandOnEnter)
-        case "apply_to": return applyTo.rawValue
-        case "fill_mode": return fillMode.rawValue
-        case "spaces": return spaces.rawValue
-        case "thumb_max_px": return String(thumbMaxPx)
-        case "preview_max_px": return String(previewMaxPx)
-        case "type_to_filter": return boolString(typeToFilter)
-        case "log_level": return logLevel
-        default: return nil
-        }
+        Config.keyTable.first(where: { $0.name == key })?.get(self)
     }
 
     public func serialized() -> String {
@@ -307,6 +333,14 @@ public struct Config: Sendable, Equatable {
         if c.wallpaperDirs.isEmpty { warnings.append("wallpaper_dirs is empty") }
         return (c, warnings)
     }
+}
+
+/// One registered config key. The closures are `@Sendable` and capture nothing, so
+/// `Config.keyTable` can be a concurrency-safe `static let` under Swift 6.
+private struct ConfigKey: Sendable {
+    let name: String
+    let get: @Sendable (Config) -> String
+    let set: @Sendable (inout Config, String) -> Void
 }
 
 private func parseBool(_ raw: String) -> Bool? {
