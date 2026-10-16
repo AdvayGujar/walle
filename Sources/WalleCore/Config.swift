@@ -176,12 +176,8 @@ public struct Config: Sendable, Equatable {
     /// value untouched — a typo must not reset a setting.
     private static let keyTable: [ConfigKey] = [
         ConfigKey(name: "wallpaper_dirs",
-                  get: { $0.wallpaperDirs.joined(separator: ":") },
-                  set: { config, value in
-                      config.wallpaperDirs = value.split(separator: ":")
-                          .map { String($0).trimmingCharacters(in: .whitespaces) }
-                          .filter { !$0.isEmpty }
-                  }),
+                  get: { walleJoinPathList($0.wallpaperDirs) },
+                  set: { config, value in config.wallpaperDirs = walleSplitPathList(value) }),
         ConfigKey(name: "recursive",
                   get: { boolString($0.recursive) },
                   set: { config, value in config.recursive = parseBool(value) ?? config.recursive }),
@@ -361,6 +357,43 @@ private struct ConfigKey: Sendable {
     let name: String
     let get: @Sendable (Config) -> String
     let set: @Sendable (inout Config, String) -> Void
+}
+
+/// Splits the on-disk `wallpaper_dirs` value on unescaped colons, so a directory whose
+/// path contains a colon is written `\:` and a literal backslash `\\`. Empty components
+/// are dropped, which keeps the old "a::b" behaviour. Surrounding whitespace is trimmed.
+private func walleSplitPathList(_ raw: String) -> [String] {
+    var components: [String] = []
+    var current = ""
+    var escaping = false
+    for character in raw {
+        if escaping {
+            current.append(character)
+            escaping = false
+        } else if character == "\\" {
+            escaping = true
+        } else if character == ":" {
+            components.append(current)
+            current = ""
+        } else {
+            current.append(character)
+        }
+    }
+    // A single trailing backslash is data, not the start of an escape.
+    if escaping { current.append("\\") }
+    components.append(current)
+    return components
+        .map { $0.trimmingCharacters(in: .whitespaces) }
+        .filter { !$0.isEmpty }
+}
+
+/// The inverse of `walleSplitPathList`: escapes backslashes and colons so the joined
+/// value parses back to exactly the same list.
+private func walleJoinPathList(_ paths: [String]) -> String {
+    paths.map { path in
+        path.replacingOccurrences(of: "\\", with: "\\\\")
+            .replacingOccurrences(of: ":", with: "\\:")
+    }.joined(separator: ":")
 }
 
 private func parseBool(_ raw: String) -> Bool? {

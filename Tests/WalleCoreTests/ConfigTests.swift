@@ -66,6 +66,19 @@ struct ConfigTests {
         #expect(config.wallpaperDirs.isEmpty)
     }
 
+    @Test func wallpaperDirsEscapesColonsAndBackslashes() {
+        var config = Config()
+        config.wallpaperDirs = ["/tmp/a:b", "/tmp/c\\d", "/plain"]
+        let (parsed, warnings) = Config.parse(config.serialized())
+        #expect(warnings.isEmpty)
+        #expect(parsed.wallpaperDirs == ["/tmp/a:b", "/tmp/c\\d", "/plain"])
+
+        // The documented colon-separated form still works, with or without spaces.
+        var legacy = Config()
+        legacy.apply(key: "wallpaper_dirs", value: "/one: /two :/three")
+        #expect(legacy.wallpaperDirs == ["/one", "/two", "/three"])
+    }
+
     @Test func sanitizedClampsEvenSlotsToOdd() {
         var config = Config()
         config.slots = 8
