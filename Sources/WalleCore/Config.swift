@@ -76,7 +76,6 @@ public struct Config: Sendable, Equatable {
     public var fillMode: FillMode
     public var spaces: SpacesMode
     public var thumbMaxPx: Int
-    public var previewMaxPx: Int
     public var logLevel: String
 
     public init(
@@ -106,7 +105,6 @@ public struct Config: Sendable, Equatable {
         fillMode: FillMode = .fill,
         spaces: SpacesMode = .current,
         thumbMaxPx: Int = 1600,
-        previewMaxPx: Int = 1600,
         logLevel: String = "warn"
     ) {
         self.wallpaperDirs = wallpaperDirs
@@ -135,7 +133,6 @@ public struct Config: Sendable, Equatable {
         self.fillMode = fillMode
         self.spaces = spaces
         self.thumbMaxPx = thumbMaxPx
-        self.previewMaxPx = previewMaxPx
         self.logLevel = logLevel
     }
 
@@ -233,9 +230,6 @@ public struct Config: Sendable, Equatable {
         ConfigKey(name: "thumb_max_px",
                   get: { String($0.thumbMaxPx) },
                   set: { config, value in config.thumbMaxPx = parseInt(value) ?? config.thumbMaxPx }),
-        ConfigKey(name: "preview_max_px",
-                  get: { String($0.previewMaxPx) },
-                  set: { config, value in config.previewMaxPx = parseInt(value) ?? config.previewMaxPx }),
         ConfigKey(name: "log_level",
                   get: { $0.logLevel },
                   set: { config, value in config.logLevel = value }),
@@ -329,7 +323,6 @@ public struct Config: Sendable, Equatable {
         clamp("expanded_neighbour_alpha", &c.expandedNeighbourAlpha, 0, 1)
         clamp("animation_ms", &c.animationMs, 0, 5000)
         if c.thumbMaxPx < 16 { warnings.append("thumb_max_px too small, using 16"); c.thumbMaxPx = 16 }
-        if c.previewMaxPx < 16 { warnings.append("preview_max_px too small, using 16"); c.previewMaxPx = 16 }
         if c.wallpaperDirs.isEmpty { warnings.append("wallpaper_dirs is empty") }
         return (c, warnings)
     }

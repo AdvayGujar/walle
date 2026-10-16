@@ -37,11 +37,10 @@ struct ThumbnailTests {
         return try #require(result.wallpapers.first { $0.name == name })
     }
 
-    private func cache(in directory: URL, row: Int = 64, preview: Int = 256) -> ThumbnailCache {
+    private func cache(in directory: URL, maxPx: Int = 64) -> ThumbnailCache {
         ThumbnailCache(
             directory: directory.appendingPathComponent("thumbs", isDirectory: true),
-            rowMaxPx: row,
-            previewMaxPx: preview)
+            maxPx: maxPx)
     }
 
     private func pixelSize(at url: URL) throws -> (width: Int, height: Int) {
@@ -60,23 +59,26 @@ struct ThumbnailTests {
 
     // MARK: - Naming
 
-    @Test func cacheURLIsStableAndDependsOnClassAndMtime() throws {
+    @Test func cacheURLIsStableAndDependsOnBudgetAndMtime() throws {
         try withTempDirectory { dir in
             let imageURL = dir.appendingPathComponent("one.png")
             try writeImage(at: imageURL, width: 40, height: 30)
             let wallpaper = try scanWallpaper(in: dir, named: "one.png")
             let cache = cache(in: dir)
 
-            let row = cache.cacheURL(for: wallpaper, sizeClass: .row)
-            #expect(cache.cacheURL(for: wallpaper, sizeClass: .row) == row)
-            #expect(cache.cacheURL(for: wallpaper, sizeClass: .preview) != row)
+            let url = cache.cacheURL(for: wallpaper)
+            #expect(cache.cacheURL(for: wallpaper) == url)
+            #expect(cache.maxPixels == 64)
 
             var changed = wallpaper
             changed.modifiedAt = wallpaper.modifiedAt.addingTimeInterval(120)
-            #expect(cache.cacheURL(for: changed, sizeClass: .row) != row)
+            #expect(cache.cacheURL(for: changed) != url)
 
-            #expect(cache.maxPixels(for: .row) == 64)
-            #expect(cache.maxPixels(for: .preview) == 256)
+            // A different pixel budget is a different entry, so changing thumb_max_px
+            // can never serve a stale size.
+            let other = ThumbnailCache(
+                directory: dir.appendingPathComponent("thumbs", isDirectory: true), maxPx: 128)
+            #expect(other.cacheURL(for: wallpaper) != url)
         }
     }
 
@@ -87,26 +89,26 @@ struct ThumbnailTests {
             let wallpaper = try scanWallpaper(in: dir, named: "one.png")
             let cache = cache(in: dir)
 
-            #expect(cache.existingThumbnail(for: wallpaper, sizeClass: .row) == nil)
-            let url = try cache.thumbnail(for: wallpaper, sizeClass: .row)
+            #expect(cache.existingThumbnail(for: wallpaper) == nil)
+            let url = try cache.thumbnail(for: wallpaper)
             #expect(FileManager.default.fileExists(atPath: url.path))
-            #expect(cache.existingThumbnail(for: wallpaper, sizeClass: .row) == url)
+            #expect(cache.existingThumbnail(for: wallpaper) == url)
             // A second request is a cache hit, not a second write.
-            let cachedAgain = try cache.thumbnail(for: wallpaper, sizeClass: .row)
+            let cachedAgain = try cache.thumbnail(for: wallpaper)
             #expect(cachedAgain == url)
         }
     }
 
     // MARK: - Generation
 
-    @Test func generatedRowThumbnailRespectsPixelBudgetAndAspect() throws {
+    @Test func generatedThumbnailRespectsPixelBudgetAndAspect() throws {
         try withTempDirectory { dir in
             let imageURL = dir.appendingPathComponent("landscape.png")
             try writeImage(at: imageURL, width: 800, height: 600)
             let wallpaper = try scanWallpaper(in: dir, named: "landscape.png")
-            let cache = cache(in: dir, row: 100, preview: 300)
+            let cache = cache(in: dir, maxPx: 100)
 
-            let thumbnailURL = try cache.thumbnail(for: wallpaper, sizeClass: .row)
+            let thumbnailURL = try cache.thumbnail(for: wallpaper)
             let size = try pixelSize(at: thumbnailURL)
             #expect(max(size.width, size.height) <= 100)
             #expect(max(size.width, size.height) >= 90)
@@ -118,35 +120,18 @@ struct ThumbnailTests {
         }
     }
 
-    @Test func generatedPreviewThumbnailPreservesPortraitAspect() throws {
+    @Test func generatedThumbnailPreservesPortraitAspect() throws {
         try withTempDirectory { dir in
             let imageURL = dir.appendingPathComponent("portrait.png")
             try writeImage(at: imageURL, width: 600, height: 800)
             let wallpaper = try scanWallpaper(in: dir, named: "portrait.png")
-            let cache = cache(in: dir, row: 100, preview: 300)
+            let cache = cache(in: dir, maxPx: 300)
 
-            let thumbnailURL = try cache.thumbnail(for: wallpaper, sizeClass: .preview)
+            let thumbnailURL = try cache.thumbnail(for: wallpaper)
             let size = try pixelSize(at: thumbnailURL)
             #expect(max(size.width, size.height) <= 300)
             #expect(max(size.width, size.height) >= 290)
             #expect(abs(Double(size.width) / Double(size.height) - 0.75) < 0.02)
-        }
-    }
-
-    @Test func rowAndPreviewWriteDistinctFiles() throws {
-        try withTempDirectory { dir in
-            let imageURL = dir.appendingPathComponent("one.png")
-            try writeImage(at: imageURL, width: 320, height: 200)
-            let wallpaper = try scanWallpaper(in: dir, named: "one.png")
-            let cache = cache(in: dir, row: 64, preview: 256)
-
-            let rowURL = try cache.thumbnail(for: wallpaper, sizeClass: .row)
-            let previewURL = try cache.thumbnail(for: wallpaper, sizeClass: .preview)
-            #expect(rowURL != previewURL)
-            #expect(FileManager.default.fileExists(atPath: rowURL.path))
-            #expect(FileManager.default.fileExists(atPath: previewURL.path))
-            let deleted = try cache.prune(keeping: [wallpaper])
-            #expect(deleted == 0)
         }
     }
 
@@ -155,12 +140,12 @@ struct ThumbnailTests {
             let badURL = dir.appendingPathComponent("bad.png")
             try Data([0xDE, 0xAD, 0xBE, 0xEF, 0x00, 0x11, 0x22, 0x33]).write(to: badURL)
             let wallpaper = try scanWallpaper(in: dir, named: "bad.png")
-            let cache = cache(in: dir, row: 32, preview: 64)
+            let cache = cache(in: dir, maxPx: 32)
 
             #expect(throws: ThumbnailError.self) {
-                _ = try cache.thumbnail(for: wallpaper, sizeClass: .row)
+                _ = try cache.thumbnail(for: wallpaper)
             }
-            #expect(cache.existingThumbnail(for: wallpaper, sizeClass: .row) == nil)
+            #expect(cache.existingThumbnail(for: wallpaper) == nil)
         }
     }
 
@@ -184,9 +169,9 @@ struct ThumbnailTests {
             let b = try #require(result.wallpapers.first { $0.name == "b.png" })
             let c = try #require(result.wallpapers.first { $0.name == "c.png" })
 
-            let cache = cache(in: dir, row: 32, preview: 64)
+            let cache = cache(in: dir, maxPx: 32)
             for wallpaper in [a, b, c] {
-                try cache.thumbnail(for: wallpaper, sizeClass: .row)
+                try cache.thumbnail(for: wallpaper)
             }
 
             // b disappears entirely; c keeps its path but is modified.
@@ -197,15 +182,15 @@ struct ThumbnailTests {
 
             let deleted = try cache.prune(keeping: [a, b, c])
             #expect(deleted == 2)
-            #expect(cache.existingThumbnail(for: a, sizeClass: .row) != nil)
-            #expect(cache.existingThumbnail(for: b, sizeClass: .row) == nil)
-            #expect(cache.existingThumbnail(for: c, sizeClass: .row) == nil)
+            #expect(cache.existingThumbnail(for: a) != nil)
+            #expect(cache.existingThumbnail(for: b) == nil)
+            #expect(cache.existingThumbnail(for: c) == nil)
         }
     }
 
     @Test func pruneOnMissingDirectoryIsQuiet() throws {
         try withTempDirectory { dir in
-            let cache = cache(in: dir, row: 32, preview: 64)
+            let cache = cache(in: dir, maxPx: 32)
             let deleted = try cache.prune(keeping: [])
             #expect(deleted == 0)
             #expect(cache.cacheSizeBytes() == 0)
@@ -219,16 +204,12 @@ struct ThumbnailTests {
             let imageURL = dir.appendingPathComponent("one.png")
             try writeImage(at: imageURL, width: 200, height: 150)
             let wallpaper = try scanWallpaper(in: dir, named: "one.png")
-            let cache = cache(in: dir, row: 64, preview: 128)
+            let cache = cache(in: dir, maxPx: 64)
 
             #expect(cache.cacheSizeBytes() == 0)
-            let rowURL = try cache.thumbnail(for: wallpaper, sizeClass: .row)
-            let rowSize = try fileSize(at: rowURL)
-            #expect(cache.cacheSizeBytes() == rowSize)
-
-            let previewURL = try cache.thumbnail(for: wallpaper, sizeClass: .preview)
-            let previewSize = try fileSize(at: previewURL)
-            #expect(cache.cacheSizeBytes() == rowSize + previewSize)
+            let url = try cache.thumbnail(for: wallpaper)
+            let size = try fileSize(at: url)
+            #expect(cache.cacheSizeBytes() == size)
         }
     }
 }

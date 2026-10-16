@@ -928,8 +928,7 @@ public struct CLI {
 
         // Thumbnail cache
         let cache = ThumbnailCache(directory: environment.paths.thumbnailsDir,
-                                   rowMaxPx: config.thumbMaxPx,
-                                   previewMaxPx: config.previewMaxPx)
+                                   maxPx: config.thumbMaxPx)
         let cacheBytes = cache.cacheSizeBytes()
         checks.append(("thumbnail cache", cacheBytes > 0,
                        String(cacheBytes) + " bytes in " + environment.paths.thumbnailsDir.path
@@ -1085,30 +1084,24 @@ public struct CLI {
         if let answer = capturePicker(["--thumb-size"], environment), let parsed = Int(answer) {
             thumbPixels = parsed
         }
-        let cache = ThumbnailCache(directory: cacheDir,
-                                   rowMaxPx: thumbPixels,
-                                   previewMaxPx: max(config.previewMaxPx, thumbPixels))
+        let cache = ThumbnailCache(directory: cacheDir, maxPx: thumbPixels)
 
         let started = Date()
         var generated = 0
         var failed = 0
         var failures: [String] = []
 
+        // One thumbnail per wallpaper: the picker uses a single size for every card.
         for wallpaper in scan.wallpapers {
-            // One size class: the picker uses the same thumbnail for every card, so
-            // building a second set would only waste disk and time.
-            for sizeClass in [ThumbSizeClass.row] {
-                if cache.existingThumbnail(for: wallpaper, sizeClass: sizeClass) != nil {
-                    continue
-                }
-                do {
-                    _ = try cache.thumbnail(for: wallpaper, sizeClass: sizeClass)
-                    generated += 1
-                } catch {
-                    failed += 1
-                    failures.append(wallpaper.name + " (" + sizeClass.rawValue + "): "
-                                    + String(describing: error))
-                }
+            if cache.existingThumbnail(for: wallpaper) != nil {
+                continue
+            }
+            do {
+                _ = try cache.thumbnail(for: wallpaper)
+                generated += 1
+            } catch {
+                failed += 1
+                failures.append(wallpaper.name + ": " + String(describing: error))
             }
         }
 

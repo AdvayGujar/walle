@@ -72,11 +72,8 @@ public final class PickerController: NSObject, NSApplicationDelegate {
         }
 
         let provider = ThumbnailProvider(
-            cache: ThumbnailCache(directory: paths.thumbnailsDir,
-                                  rowMaxPx: thumbPixels,
-                                  previewMaxPx: max(config.previewMaxPx, thumbPixels)),
-            rowMaxPx: thumbPixels,
-            previewMaxPx: max(config.previewMaxPx, thumbPixels))
+            cache: ThumbnailCache(directory: paths.thumbnailsDir, maxPx: thumbPixels),
+            maxPx: thumbPixels)
 
         let contentFrame = CGRect(origin: .zero, size: screen.frame.size)
         let view = CorridorView(frame: contentFrame, config: config, provider: provider,
