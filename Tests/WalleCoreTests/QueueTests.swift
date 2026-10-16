@@ -49,13 +49,4 @@ struct QueueTests {
         #expect(Queue.focus(after: 0, from: 4, count: 9) == 4)
     }
 
-    @Test func slotForIndexFindsVisibleAndRejectsOffScreen() {
-        #expect(Queue.slot(forIndex: 0, focus: 0, centerSlot: 4, slotCount: 9, count: 9) == 4)
-        #expect(Queue.slot(forIndex: 5, focus: 0, centerSlot: 4, slotCount: 9, count: 9) == 0)
-        #expect(Queue.slot(forIndex: 4, focus: 0, centerSlot: 4, slotCount: 9, count: 9) == 8)
-        // With only 5 slots visible, index 3 is off screen for focus 0.
-        #expect(Queue.slot(forIndex: 3, focus: 0, centerSlot: 2, slotCount: 5, count: 9) == nil)
-        // The matching index is wrapped before the search: 12 wraps to 3, shown in slot 7.
-        #expect(Queue.slot(forIndex: 12, focus: 0, centerSlot: 4, slotCount: 9, count: 9) == 7)
-    }
 }

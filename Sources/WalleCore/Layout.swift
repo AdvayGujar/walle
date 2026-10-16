@@ -193,21 +193,4 @@ public struct LayoutEngine: Sendable {
         let half = slot.width / 2
         return unshearedX >= midX - half && unshearedX <= midX + half
     }
-
-    /// Which library index is under the point, or nil for the backdrop.
-    public func hitTest(_ point: CGPoint, slots: [SlotGeometry]) -> Int? {
-        for slot in slots.sorted(by: { $0.zPosition > $1.zPosition })
-        where LayoutEngine.contains(point, in: slot) {
-            return slot.index
-        }
-        return nil
-    }
-
-    public func hitTestSlot(_ point: CGPoint, slots: [SlotGeometry]) -> SlotGeometry? {
-        for slot in slots.sorted(by: { $0.zPosition > $1.zPosition })
-        where LayoutEngine.contains(point, in: slot) {
-            return slot
-        }
-        return nil
-    }
 }

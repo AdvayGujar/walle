@@ -13,7 +13,11 @@ public enum Queue {
 
     /// How many tiles to actually show. Clamps to the library when it is small so a
     /// 3-image library shows 3 slots instead of 9 copies of the same three.
-    /// Always odd so there is a true centre slot.
+    ///
+    /// Always odd so there is a true centre slot. An even library therefore gets one
+    /// extra slot: two wallpapers show as three cards, and the same wallpaper appears on
+    /// both sides of the centre. That duplication is the deliberate price of keeping a
+    /// real centre slot instead of a half-covered one.
     public static func effectiveSlotCount(configured: Int, libraryCount: Int) -> Int {
         guard libraryCount > 0 else { return 0 }
         var c = max(1, configured)
@@ -38,14 +42,4 @@ public enum Queue {
         wrapIndex(focus + delta, count: count)
     }
 
-    /// The slot displaying a given library index, or nil when it is off screen.
-    public static func slot(forIndex matching: Int, focus: Int, centerSlot: Int, slotCount: Int, count: Int) -> Int? {
-        let target = wrapIndex(matching, count: count)
-        for slot in 0..<slotCount {
-            if index(forSlot: slot, centerSlot: centerSlot, focus: focus, count: count) == target {
-                return slot
-            }
-        }
-        return nil
-    }
 }

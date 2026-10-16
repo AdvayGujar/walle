@@ -2,7 +2,7 @@ import CoreGraphics
 import Testing
 @testable import WalleCore
 
-@Suite("Layout geometry and hit testing")
+@Suite("Layout geometry")
 struct LayoutTests {
 
     // MARK: - Slot count
@@ -238,37 +238,6 @@ struct LayoutTests {
         // Above and below the card are rejected.
         #expect(!LayoutEngine.contains(CGPoint(x: midX, y: minY - 1), in: tile))
         #expect(!LayoutEngine.contains(CGPoint(x: midX, y: minY + height + 1), in: tile))
-    }
-
-    @Test func hitTestReturnsCentreIndexAndNilForBackdrop() {
-        let engine = makeLayoutEngine(expanded: true, screen: ScreenMetrics(width: 1920, height: 1080))
-        let slots = engine.slots(count: 5, focus: 0)
-        let centre = slots.first { $0.isCenter }!
-        let point = CGPoint(x: centre.rect.midX, y: centre.rect.midY)
-        #expect(engine.hitTest(point, slots: slots) == centre.index)
-        #expect(engine.hitTestSlot(point, slots: slots)?.slot == centre.slot)
-
-        let lowestEdge = slots.map { Double($0.rect.maxY) }.max() ?? engine.centerY
-        #expect(engine.hitTest(CGPoint(x: engine.centerX, y: lowestEdge + 50), slots: slots) == nil)
-        #expect(engine.hitTest(CGPoint(x: 1, y: engine.centerY), slots: slots) == nil)
-    }
-
-    @Test func hitTestPrefersHigherZPositionRegardlessOfArrayOrder() {
-        let engine = makeLayoutEngine()
-        func makeSlot(slot: Int, offset: Int, index: Int, rect: CGRect, zPosition: Double) -> SlotGeometry {
-            SlotGeometry(slot: slot, offset: offset, index: index, rect: rect,
-                         width: Double(rect.width), height: Double(rect.height), skew: 0,
-                         alpha: 1, zPosition: zPosition, isCenter: false,
-                         cornerRadius: 0, borderWidth: 0)
-        }
-        let back = makeSlot(slot: 0, offset: -1, index: 7,
-                            rect: CGRect(x: 0, y: 0, width: 100, height: 100), zPosition: 1)
-        let front = makeSlot(slot: 1, offset: 1, index: 2,
-                             rect: CGRect(x: 50, y: 50, width: 100, height: 100), zPosition: 2)
-        let point = CGPoint(x: 75, y: 75)
-        #expect(engine.hitTest(point, slots: [back, front]) == 2)
-        #expect(engine.hitTest(point, slots: [front, back]) == 2)
-        #expect(engine.hitTestSlot(point, slots: [back, front])?.slot == 1)
     }
 }
 
