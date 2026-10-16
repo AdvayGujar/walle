@@ -903,6 +903,10 @@ public struct CLI {
 
         let fm = FileManager.default
         var checks: [(name: String, ok: Bool, detail: String)] = []
+        // Config parse and sanitize warnings are advisory: a stale or mistyped line still
+        // leaves a working config, so it must not make doctor report a failure. Real
+        // problems (no library, no picker, no hotkey) stay in `checks` and are counted.
+        var notes: [String] = []
 
         // Config
         let configPath = environment.paths.configFile.path
@@ -910,7 +914,7 @@ public struct CLI {
         let (config, configWarnings) = loadConfig(environment)
         checks.append(("config file", true,
                        configExists ? configPath : configPath + " (absent, defaults in use)"))
-        for warning in configWarnings { checks.append(("config warning", false, warning)) }
+        notes.append(contentsOf: configWarnings.map { "config warning: " + $0 })
 
         // Library
         checks.append(("wallpaper dirs", !config.wallpaperDirs.isEmpty,
@@ -1010,12 +1014,14 @@ public struct CLI {
                 "ok": failures == 0,
                 "failures": failures,
                 "checks": checks.map { ["name": $0.name, "ok": $0.ok, "detail": $0.detail] },
+                "warnings": notes,
             ], to: environment)
         } else {
             for check in checks {
                 environment.output.out((check.ok ? "  ok  " : " fail ") + check.name
                                        + "  " + check.detail)
             }
+            for note in notes { environment.output.out(" warn " + note) }
             environment.output.out(failures == 0
                 ? "all checks passed"
                 : String(failures) + " check" + (failures == 1 ? "" : "s") + " failed")
