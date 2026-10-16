@@ -52,8 +52,6 @@ public final class ThumbnailProvider: @unchecked Sendable {
     }
 
     private let cache: ThumbnailCache
-    private let rowMaxPx: Int
-    private let previewMaxPx: Int
 
     private let memoryCache = NSCache<NSString, CGImage>()
     private let counter = MemoryCacheCounter()
@@ -66,34 +64,30 @@ public final class ThumbnailProvider: @unchecked Sendable {
         qos: .userInitiated,
         attributes: .concurrent)
 
-    public init(cache: ThumbnailCache, rowMaxPx: Int, previewMaxPx: Int) {
+    public init(cache: ThumbnailCache, maxPx: Int) {
         self.cache = cache
-        self.rowMaxPx = rowMaxPx
-        self.previewMaxPx = previewMaxPx
 
         // Bound the decoded-image cache by real bytes, sized to what the picker actually
-        // holds at once: the centred card, the two cards that can slide into the centre,
-        // and the small thumbnails for the whole row.
+        // holds at once: a full row of cards plus the images that can slide through it.
         //
-        // The previous bound used previewMaxPx squared times four bytes, which is a square
-        // upper bound for a 16:9 image and roughly double the truth, and then multiplied it
-        // by eight. That permitted something like 80 MB of decoded images, which was the
-        // single largest contributor to the picker's memory use.
+        // There is a single thumbnail size now, so the old "3 previews + 12 row
+        // thumbnails" arithmetic is gone; the budget is one decoded image (a 16:9
+        // approximation of the square pixel budget) times a row plus headroom. Getting
+        // this wrong was previously the single largest contributor to the picker's memory
+        // use.
         let nineSixteenths = 9.0 / 16.0
-        let typicalPreview = Double(max(1, previewMaxPx) * max(1, previewMaxPx))
-            * 4 * nineSixteenths
-        let typicalRow = Double(max(1, rowMaxPx) * max(1, rowMaxPx)) * 4 * nineSixteenths
-        memoryCache.totalCostLimit = Int(typicalPreview * 3 + typicalRow * 12)
+        let typical = Double(max(1, maxPx) * max(1, maxPx)) * 4 * nineSixteenths
+        memoryCache.totalCostLimit = Int(typical * 15)
         memoryCache.countLimit = 64
         memoryCache.delegate = counter
     }
 
     // MARK: - Public API
 
-    /// Decoded image for the wallpaper at this size class. Generates the on-disk
-    /// thumbnail if missing. Returns nil for unreadable or corrupt sources. Never throws.
-    public func image(for wallpaper: Wallpaper, sizeClass: ThumbSizeClass) -> CGImage? {
-        let key = memoryKey(for: wallpaper, sizeClass: sizeClass)
+    /// Decoded image for the wallpaper. Generates the on-disk thumbnail if missing.
+    /// Returns nil for unreadable or corrupt sources. Never throws.
+    public func image(for wallpaper: Wallpaper) -> CGImage? {
+        let key = memoryKey(for: wallpaper)
         if let cached = memoryCache.object(forKey: key as NSString) {
             return cached
         }
@@ -114,7 +108,7 @@ public final class ThumbnailProvider: @unchecked Sendable {
         inFlight[key] = entry
         lock.unlock()
 
-        let decoded = decode(for: wallpaper, sizeClass: sizeClass)
+        let decoded = decode(for: wallpaper)
         return finish(entry: entry, key: key, image: decoded)
     }
 
@@ -123,10 +117,9 @@ public final class ThumbnailProvider: @unchecked Sendable {
     /// into the same work; every caller still receives the result.
     public func imageAsync(
         for wallpaper: Wallpaper,
-        sizeClass: ThumbSizeClass,
         completion: @escaping @Sendable (CGImage?) -> Void
     ) {
-        let key = memoryKey(for: wallpaper, sizeClass: sizeClass)
+        let key = memoryKey(for: wallpaper)
         if let cached = memoryCache.object(forKey: key as NSString) {
             DispatchQueue.main.async { completion(cached) }
             return
@@ -148,15 +141,15 @@ public final class ThumbnailProvider: @unchecked Sendable {
                 DispatchQueue.main.async { completion(nil) }
                 return
             }
-            let decoded = self.decode(for: wallpaper, sizeClass: sizeClass)
+            let decoded = self.decode(for: wallpaper)
             _ = self.finish(entry: entry, key: key, image: decoded)
         }
     }
 
-    /// Generates and caches the requested size class for every wallpaper. Empty input is a no-op.
-    public func preload(_ wallpapers: [Wallpaper], sizeClass: ThumbSizeClass) {
+    /// Generates and caches the thumbnail for every wallpaper. Empty input is a no-op.
+    public func preload(_ wallpapers: [Wallpaper]) {
         for wallpaper in wallpapers {
-            _ = image(for: wallpaper, sizeClass: sizeClass)
+            _ = image(for: wallpaper)
         }
     }
 
@@ -171,16 +164,16 @@ public final class ThumbnailProvider: @unchecked Sendable {
 
     // MARK: - Internals
 
-    /// Path plus size class: the on-disk thumbnail identity is already content-addressed,
-    /// so the same key can never mix two size classes.
-    private func memoryKey(for wallpaper: Wallpaper, sizeClass: ThumbSizeClass) -> String {
-        cache.cacheURL(for: wallpaper, sizeClass: sizeClass).path + "|" + sizeClass.rawValue
+    /// The on-disk thumbnail identity is already content-addressed and includes the pixel
+    /// budget, so the path alone is a complete in-memory key.
+    private func memoryKey(for wallpaper: Wallpaper) -> String {
+        cache.cacheURL(for: wallpaper).path
     }
 
     /// Produces the on-disk thumbnail through the cache, then decodes that JPEG.
     /// A missing source, a corrupt file, or a generation failure all collapse to nil.
-    private func decode(for wallpaper: Wallpaper, sizeClass: ThumbSizeClass) -> CGImage? {
-        guard let url = try? cache.thumbnail(for: wallpaper, sizeClass: sizeClass) else {
+    private func decode(for wallpaper: Wallpaper) -> CGImage? {
+        guard let url = try? cache.thumbnail(for: wallpaper) else {
             return nil
         }
         guard let source = CGImageSourceCreateWithURL(url as CFURL, nil) else {

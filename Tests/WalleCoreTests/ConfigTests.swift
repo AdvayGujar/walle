@@ -66,6 +66,19 @@ struct ConfigTests {
         #expect(config.wallpaperDirs.isEmpty)
     }
 
+    @Test func wallpaperDirsEscapesColonsAndBackslashes() {
+        var config = Config()
+        config.wallpaperDirs = ["/tmp/a:b", "/tmp/c\\d", "/plain"]
+        let (parsed, warnings) = Config.parse(config.serialized())
+        #expect(warnings.isEmpty)
+        #expect(parsed.wallpaperDirs == ["/tmp/a:b", "/tmp/c\\d", "/plain"])
+
+        // The documented colon-separated form still works, with or without spaces.
+        var legacy = Config()
+        legacy.apply(key: "wallpaper_dirs", value: "/one: /two :/three")
+        #expect(legacy.wallpaperDirs == ["/one", "/two", "/three"])
+    }
+
     @Test func sanitizedClampsEvenSlotsToOdd() {
         var config = Config()
         config.slots = 8
@@ -145,6 +158,33 @@ struct ConfigTests {
         #expect(warnings.contains { $0.contains("wallpaper_dirs") && $0.contains("empty") })
     }
 
+    @Test func logLevelParsesSpellingsAndKeepsPreviousOnGarbage() {
+        #expect(LogLevel.parse("WARN") == .warn)
+        #expect(LogLevel.parse(" warning ") == .warn)
+        #expect(LogLevel.parse("quiet") == .silent)
+        #expect(LogLevel.parse("error") == .error)
+        #expect(LogLevel.parse("info") == .info)
+        #expect(LogLevel.parse("bogus") == nil)
+
+        var config = Config()
+        config.apply(key: "log_level", value: "info")
+        #expect(config.logLevel == .info)
+        // A malformed level leaves the previous one alone rather than failing the load.
+        config.apply(key: "log_level", value: "bogus")
+        #expect(config.logLevel == .info)
+    }
+
+    @Test func logLevelControlsWarningsStatusAndInfo() {
+        #expect(LogLevel.silent.showsWarnings == false)
+        #expect(LogLevel.error.showsWarnings == false)
+        #expect(LogLevel.warn.showsWarnings == true)
+        #expect(LogLevel.info.showsWarnings == true)
+        #expect(LogLevel.silent.showsStatus == false)
+        #expect(LogLevel.error.showsStatus == true)
+        #expect(LogLevel.warn.showsInfo == false)
+        #expect(LogLevel.info.showsInfo == true)
+    }
+
     @Test func enumParsingIsCaseInsensitiveAndRejectsGarbage() {
         #expect(SortMode.parse("NaMe") == .name)
         #expect(SortMode.parse(" MTIME ") == .mtime)
@@ -168,7 +208,7 @@ struct ConfigTests {
             config.slots = 5
             config.wallpaperDirs = ["/tmp/one", "/tmp/two"]
             config.sort = .random
-            config.logLevel = "debug"
+            config.logLevel = .info
 
             let url = dir.appendingPathComponent("config")
             try config.save(to: url)
@@ -176,6 +216,57 @@ struct ConfigTests {
             let (loaded, warnings) = Config.load(from: url)
             #expect(warnings.isEmpty)
             #expect(loaded == config)
+        }
+    }
+
+    @Test func savePreservingStructureKeepsCommentsAndUnknownLines() throws {
+        try withTempDirectory { dir in
+            let url = dir.appendingPathComponent("config")
+            try Data("""
+            # my notes
+            slots = 5
+
+            # geometry
+            card_width = 280
+            type_to_filter = true
+            """.utf8).write(to: url)
+
+            var config = Config()
+            config.slots = 7
+            config.cardWidth = 300
+            try config.save(to: url, updating: ["slots", "not_a_real_key"])
+
+            let text = String(data: try Data(contentsOf: url), encoding: .utf8) ?? ""
+            #expect(text.contains("# my notes"))
+            #expect(text.contains("# geometry"))
+            #expect(text.contains("type_to_filter = true"))
+            #expect(text.contains("slots = 7"))
+            // A key that was not asked for is untouched, and an unknown key is rejected.
+            #expect(text.contains("card_width = 280"))
+            #expect(!text.contains("not_a_real_key"))
+        }
+    }
+
+    @Test func savePreservingStructureAppendsMissingKeysAndCreatesMissingFile() throws {
+        try withTempDirectory { dir in
+            let url = dir.appendingPathComponent("config")
+            try Data("# nothing here\n".utf8).write(to: url)
+
+            var config = Config()
+            config.sort = .mtime
+            try config.save(to: url, updating: ["sort"])
+
+            let text = String(data: try Data(contentsOf: url), encoding: .utf8) ?? ""
+            #expect(text.contains("# nothing here"))
+            #expect(text.contains("sort = mtime"))
+
+            // A missing file still gets a complete, loadable config.
+            let fresh = dir.appendingPathComponent("fresh")
+            try config.save(to: fresh, updating: ["sort"])
+            let freshText = String(data: try Data(contentsOf: fresh), encoding: .utf8) ?? ""
+            #expect(freshText.contains("wallpaper_dirs = "))
+            #expect(freshText.contains("sort = mtime"))
+            #expect(Config.parse(freshText).warnings.isEmpty)
         }
     }
 

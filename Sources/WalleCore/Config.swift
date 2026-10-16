@@ -40,6 +40,33 @@ public enum SpacesMode: String, Sendable, CaseIterable {
     }
 }
 
+/// How much walle reports. Errors are always printed, so a failing command can say why;
+/// the level controls warnings and status chatter.
+public enum LogLevel: String, Sendable, CaseIterable {
+    case silent
+    case error
+    case warn
+    case info
+
+    public static func parse(_ raw: String) -> LogLevel? {
+        switch raw.lowercased().trimmingCharacters(in: .whitespaces) {
+        case "silent", "quiet", "off", "none": return .silent
+        case "error": return .error
+        case "warn", "warning": return .warn
+        case "info": return .info
+        default: return nil
+        }
+    }
+
+    /// Warnings are diagnostic, so they are shown from `warn` up.
+    public var showsWarnings: Bool { self == .warn || self == .info }
+    /// Status lines (what the Space sync did, for example) are shown unless nothing at
+    /// all was asked for.
+    public var showsStatus: Bool { self != .silent }
+    /// Extra step-by-step detail.
+    public var showsInfo: Bool { self == .info }
+}
+
 /// Everything tunable, parsed from a plain key = value file.
 ///
 /// Geometry is expressed in design units for a 1920-wide screen. Layout multiplies every
@@ -76,8 +103,7 @@ public struct Config: Sendable, Equatable {
     public var fillMode: FillMode
     public var spaces: SpacesMode
     public var thumbMaxPx: Int
-    public var previewMaxPx: Int
-    public var logLevel: String
+    public var logLevel: LogLevel
 
     public init(
         wallpaperDirs: [String] = ["~/Downloads/wallpaper"],
@@ -106,8 +132,7 @@ public struct Config: Sendable, Equatable {
         fillMode: FillMode = .fill,
         spaces: SpacesMode = .current,
         thumbMaxPx: Int = 1600,
-        previewMaxPx: Int = 1600,
-        logLevel: String = "warn"
+        logLevel: LogLevel = .warn
     ) {
         self.wallpaperDirs = wallpaperDirs
         self.recursive = recursive
@@ -135,7 +160,6 @@ public struct Config: Sendable, Equatable {
         self.fillMode = fillMode
         self.spaces = spaces
         self.thumbMaxPx = thumbMaxPx
-        self.previewMaxPx = previewMaxPx
         self.logLevel = logLevel
     }
 
@@ -152,12 +176,8 @@ public struct Config: Sendable, Equatable {
     /// value untouched — a typo must not reset a setting.
     private static let keyTable: [ConfigKey] = [
         ConfigKey(name: "wallpaper_dirs",
-                  get: { $0.wallpaperDirs.joined(separator: ":") },
-                  set: { config, value in
-                      config.wallpaperDirs = value.split(separator: ":")
-                          .map { String($0).trimmingCharacters(in: .whitespaces) }
-                          .filter { !$0.isEmpty }
-                  }),
+                  get: { walleJoinPathList($0.wallpaperDirs) },
+                  set: { config, value in config.wallpaperDirs = walleSplitPathList(value) }),
         ConfigKey(name: "recursive",
                   get: { boolString($0.recursive) },
                   set: { config, value in config.recursive = parseBool(value) ?? config.recursive }),
@@ -233,12 +253,9 @@ public struct Config: Sendable, Equatable {
         ConfigKey(name: "thumb_max_px",
                   get: { String($0.thumbMaxPx) },
                   set: { config, value in config.thumbMaxPx = parseInt(value) ?? config.thumbMaxPx }),
-        ConfigKey(name: "preview_max_px",
-                  get: { String($0.previewMaxPx) },
-                  set: { config, value in config.previewMaxPx = parseInt(value) ?? config.previewMaxPx }),
         ConfigKey(name: "log_level",
-                  get: { $0.logLevel },
-                  set: { config, value in config.logLevel = value }),
+                  get: { $0.logLevel.rawValue },
+                  set: { config, value in config.logLevel = LogLevel.parse(value) ?? config.logLevel }),
     ]
 
     public static func parse(_ text: String) -> (config: Config, warnings: [String]) {
@@ -301,6 +318,25 @@ public struct Config: Sendable, Equatable {
         try Data(serialized().utf8).write(to: url, options: .atomic)
     }
 
+    /// Writes the config while preserving the structure of an existing file.
+    ///
+    /// `save(to:)` serialises the whole Config from scratch, which is right when creating a
+    /// fresh file but destroys any comment or hand-written line the user added. Editing
+    /// commands (`config set/unset`, `dir add/remove/use`) use this instead: only the
+    /// lines for `keys` are rewritten, or appended when absent, and every other line —
+    /// comments, blank lines, unknown keys, the user's own key order — is left as it was.
+    public func save(to url: URL, updating keys: Set<String>, fileManager: FileManager = .default) throws {
+        try fileManager.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        guard let data = fileManager.contents(atPath: url.path),
+              let text = String(data: data, encoding: .utf8) else {
+            // No file yet: there is no structure to preserve, so write a complete one.
+            try save(to: url, fileManager: fileManager)
+            return
+        }
+        try Data(wallePatchConfigText(text, with: self, updating: keys).utf8)
+            .write(to: url, options: .atomic)
+    }
+
     public func sanitized() -> (config: Config, warnings: [String]) {
         var c = self
         var warnings: [String] = []
@@ -329,7 +365,6 @@ public struct Config: Sendable, Equatable {
         clamp("expanded_neighbour_alpha", &c.expandedNeighbourAlpha, 0, 1)
         clamp("animation_ms", &c.animationMs, 0, 5000)
         if c.thumbMaxPx < 16 { warnings.append("thumb_max_px too small, using 16"); c.thumbMaxPx = 16 }
-        if c.previewMaxPx < 16 { warnings.append("preview_max_px too small, using 16"); c.previewMaxPx = 16 }
         if c.wallpaperDirs.isEmpty { warnings.append("wallpaper_dirs is empty") }
         return (c, warnings)
     }
@@ -341,6 +376,64 @@ private struct ConfigKey: Sendable {
     let name: String
     let get: @Sendable (Config) -> String
     let set: @Sendable (inout Config, String) -> Void
+}
+
+/// Splits the on-disk `wallpaper_dirs` value on unescaped colons, so a directory whose
+/// path contains a colon is written `\:` and a literal backslash `\\`. Empty components
+/// are dropped, which keeps the old "a::b" behaviour. Surrounding whitespace is trimmed.
+private func walleSplitPathList(_ raw: String) -> [String] {
+    var components: [String] = []
+    var current = ""
+    var escaping = false
+    for character in raw {
+        if escaping {
+            current.append(character)
+            escaping = false
+        } else if character == "\\" {
+            escaping = true
+        } else if character == ":" {
+            components.append(current)
+            current = ""
+        } else {
+            current.append(character)
+        }
+    }
+    // A single trailing backslash is data, not the start of an escape.
+    if escaping { current.append("\\") }
+    components.append(current)
+    return components
+        .map { $0.trimmingCharacters(in: .whitespaces) }
+        .filter { !$0.isEmpty }
+}
+
+/// The inverse of `walleSplitPathList`: escapes backslashes and colons so the joined
+/// value parses back to exactly the same list.
+private func walleJoinPathList(_ paths: [String]) -> String {
+    paths.map { path in
+        path.replacingOccurrences(of: "\\", with: "\\\\")
+            .replacingOccurrences(of: ":", with: "\\:")
+    }.joined(separator: ":")
+}
+
+/// Rewrites the `key = value` lines named in `keys`, leaving every other line exactly
+/// as it was, and appends any named key that is missing. Keys this Config does not know
+/// are ignored, so a caller cannot inject arbitrary lines.
+private func wallePatchConfigText(_ text: String, with config: Config, updating keys: Set<String>) -> String {
+    var lines = text.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
+    var remaining = keys
+    for index in lines.indices {
+        let trimmed = lines[index].trimmingCharacters(in: .whitespaces)
+        guard !trimmed.isEmpty, !trimmed.hasPrefix("#"),
+              let equals = trimmed.firstIndex(of: "=") else { continue }
+        let key = trimmed[..<equals].trimmingCharacters(in: .whitespaces)
+        guard keys.contains(key), Config.keyOrder.contains(key) else { continue }
+        lines[index] = key + " = " + (config.value(forKey: key) ?? "")
+        remaining.remove(key)
+    }
+    for key in Config.keyOrder where remaining.contains(key) {
+        lines.append(key + " = " + (config.value(forKey: key) ?? ""))
+    }
+    return lines.joined(separator: "\n")
 }
 
 private func parseBool(_ raw: String) -> Bool? {

@@ -45,16 +45,14 @@ struct ThumbnailProviderTests {
 
     private func makeProvider(
         dir: URL,
-        row: Int = 64,
-        preview: Int = 256,
+        maxPx: Int = 64,
         fileManager: FileManager = .default
     ) -> (provider: ThumbnailProvider, cache: ThumbnailCache) {
         let cache = ThumbnailCache(
             directory: dir.appendingPathComponent("thumbs", isDirectory: true),
-            rowMaxPx: row,
-            previewMaxPx: preview,
+            maxPx: maxPx,
             fileManager: fileManager)
-        let provider = ThumbnailProvider(cache: cache, rowMaxPx: row, previewMaxPx: preview)
+        let provider = ThumbnailProvider(cache: cache, maxPx: maxPx)
         return (provider, cache)
     }
 
@@ -170,32 +168,27 @@ struct ThumbnailProviderTests {
 
     // MARK: - Synchronous decoding
 
-    @Test func imageReturnsNonNilAndRespectsMaxPixelBudgets() throws {
+    @Test func imageReturnsNonNilAndRespectsMaxPixelBudget() throws {
         try withTempDirectory { dir in
             let imageURL = dir.appendingPathComponent("big.png")
             try writeImage(at: imageURL, width: 800, height: 600)
             let wallpaper = try wallpaper(named: "big.png", in: dir)
-            let (provider, _) = makeProvider(dir: dir, row: 96, preview: 320)
+            let (provider, _) = makeProvider(dir: dir, maxPx: 96)
 
-            let row = try #require(provider.image(for: wallpaper, sizeClass: .row))
-            #expect(row.width > 1 && row.height > 1)
-            #expect(max(row.width, row.height) <= 96)
-
-            let preview = try #require(provider.image(for: wallpaper, sizeClass: .preview))
-            #expect(max(preview.width, preview.height) <= 320)
-            // The preview budget is larger, so the decoded preview is strictly bigger.
-            #expect(max(preview.width, preview.height) > max(row.width, row.height))
+            let image = try #require(provider.image(for: wallpaper))
+            #expect(image.width > 1 && image.height > 1)
+            #expect(max(image.width, image.height) <= 96)
         }
     }
 
     @Test func imageReturnsNilForMissingFile() throws {
         withTempDirectory { dir in
-            let (provider, _) = makeProvider(dir: dir, row: 64, preview: 128)
+            let (provider, _) = makeProvider(dir: dir, maxPx: 64)
             let missing = dir.appendingPathComponent("does-not-exist.png")
             let wallpaper = Wallpaper(
                 url: missing, path: missing.path, name: "does-not-exist.png",
                 modifiedAt: Date(), fileSize: 0, aspectRatio: nil)
-            #expect(provider.image(for: wallpaper, sizeClass: .row) == nil)
+            #expect(provider.image(for: wallpaper) == nil)
         }
     }
 
@@ -204,9 +197,9 @@ struct ThumbnailProviderTests {
             let badURL = dir.appendingPathComponent("bad.png")
             try Data([0xDE, 0xAD, 0xBE, 0xEF, 0x00, 0x11, 0x22, 0x33]).write(to: badURL)
             let wallpaper = try wallpaper(named: "bad.png", in: dir)
-            let (provider, _) = makeProvider(dir: dir, row: 32, preview: 64)
+            let (provider, _) = makeProvider(dir: dir, maxPx: 32)
 
-            #expect(provider.image(for: wallpaper, sizeClass: .row) == nil)
+            #expect(provider.image(for: wallpaper) == nil)
             #expect(provider.memoryCacheCount() == 0)
         }
     }
@@ -216,10 +209,10 @@ struct ThumbnailProviderTests {
             let imageURL = dir.appendingPathComponent("one.png")
             try writeImage(at: imageURL, width: 200, height: 150)
             let wallpaper = try wallpaper(named: "one.png", in: dir)
-            let (provider, _) = makeProvider(dir: dir, row: 64, preview: 128)
+            let (provider, _) = makeProvider(dir: dir, maxPx: 64)
 
             #expect(provider.memoryCacheCount() == 0)
-            #expect(provider.image(for: wallpaper, sizeClass: .row) != nil)
+            #expect(provider.image(for: wallpaper) != nil)
             #expect(provider.memoryCacheCount() > 0)
 
             provider.clearMemoryCache()
@@ -233,21 +226,21 @@ struct ThumbnailProviderTests {
             try writeImage(at: imageURL, width: 400, height: 300)
             let wallpaper = try wallpaper(named: "repeat.png", in: dir)
             let recording = RecordingFileManager()
-            let (provider, cache) = makeProvider(dir: dir, row: 64, preview: 128, fileManager: recording)
+            let (provider, cache) = makeProvider(dir: dir, maxPx: 64, fileManager: recording)
 
-            let thumbnailURL = cache.cacheURL(for: wallpaper, sizeClass: .row)
+            let thumbnailURL = cache.cacheURL(for: wallpaper)
 
-            #expect(provider.image(for: wallpaper, sizeClass: .row) != nil)
+            #expect(provider.image(for: wallpaper) != nil)
             #expect(recording.generationCount() == 1)
             let afterFirst = try modificationDate(at: thumbnailURL)
 
             // A memory hit must not touch the disk at all.
-            #expect(provider.image(for: wallpaper, sizeClass: .row) != nil)
+            #expect(provider.image(for: wallpaper) != nil)
             #expect(recording.generationCount() == 1)
 
             // Even after dropping the memory cache, the existing JPEG is reused.
             provider.clearMemoryCache()
-            #expect(provider.image(for: wallpaper, sizeClass: .row) != nil)
+            #expect(provider.image(for: wallpaper) != nil)
             #expect(recording.generationCount() == 1)
             #expect(try modificationDate(at: thumbnailURL) == afterFirst)
         }
@@ -263,12 +256,12 @@ struct ThumbnailProviderTests {
             // Eight lookups must all arrive before generation begins, otherwise a serial
             // run could hide duplicate generation behind the on-disk cache.
             let recording = RecordingFileManager(expectedConcurrentLookups: 8)
-            let (provider, _) = makeProvider(dir: dir, row: 64, preview: 128, fileManager: recording)
+            let (provider, _) = makeProvider(dir: dir, maxPx: 64, fileManager: recording)
 
             let iterations = 8
             let collector = ImageCollector()
             DispatchQueue.concurrentPerform(iterations: iterations) { _ in
-                collector.append(provider.image(for: wallpaper, sizeClass: .row))
+                collector.append(provider.image(for: wallpaper))
             }
 
             let images = collector.all()
@@ -288,11 +281,11 @@ struct ThumbnailProviderTests {
             let imageURL = dir.appendingPathComponent("async.png")
             try writeImage(at: imageURL, width: 200, height: 150)
             let wallpaper = try wallpaper(named: "async.png", in: dir)
-            let (provider, _) = makeProvider(dir: dir, row: 64, preview: 128)
+            let (provider, _) = makeProvider(dir: dir, maxPx: 64)
 
             let box = AsyncResultBox()
             let semaphore = DispatchSemaphore(value: 0)
-            provider.imageAsync(for: wallpaper, sizeClass: .row) { image in
+            provider.imageAsync(for: wallpaper) { image in
                 box.record(image, onMain: Thread.isMainThread)
                 semaphore.signal()
             }
@@ -318,11 +311,11 @@ struct ThumbnailProviderTests {
             let badURL = dir.appendingPathComponent("corrupt.png")
             try Data([0x00, 0x01, 0x02, 0x03, 0x04]).write(to: badURL)
             let wallpaper = try wallpaper(named: "corrupt.png", in: dir)
-            let (provider, _) = makeProvider(dir: dir, row: 32, preview: 64)
+            let (provider, _) = makeProvider(dir: dir, maxPx: 32)
 
             let box = AsyncResultBox()
             let semaphore = DispatchSemaphore(value: 0)
-            provider.imageAsync(for: wallpaper, sizeClass: .row) { image in
+            provider.imageAsync(for: wallpaper) { image in
                 box.record(image, onMain: Thread.isMainThread)
                 semaphore.signal()
             }
@@ -355,24 +348,20 @@ struct ThumbnailProviderTests {
                 scanWallpapers(in: dir).first { $0.name == name }
             }
             #expect(wallpapers.count == 3)
-            let (provider, cache) = makeProvider(dir: dir, row: 64, preview: 128)
+            let (provider, cache) = makeProvider(dir: dir, maxPx: 64)
 
-            provider.preload(wallpapers, sizeClass: .row)
+            provider.preload(wallpapers)
             #expect(provider.memoryCacheCount() == 3)
             for wallpaper in wallpapers {
-                #expect(cache.existingThumbnail(for: wallpaper, sizeClass: .row) != nil)
-            }
-            // Only the requested class was generated.
-            for wallpaper in wallpapers {
-                #expect(cache.existingThumbnail(for: wallpaper, sizeClass: .preview) == nil)
+                #expect(cache.existingThumbnail(for: wallpaper) != nil)
             }
         }
     }
 
     @Test func preloadWithEmptyArrayDoesNothing() throws {
         withTempDirectory { dir in
-            let (provider, _) = makeProvider(dir: dir, row: 64, preview: 128)
-            provider.preload([], sizeClass: .preview)
+            let (provider, _) = makeProvider(dir: dir, maxPx: 64)
+            provider.preload([])
             #expect(provider.memoryCacheCount() == 0)
         }
     }
@@ -393,9 +382,9 @@ struct ThumbnailProviderTests {
             #expect(wallpapers.count == total)
 
             // Tiny budgets keep the cost limit small enough to exceed cheaply.
-            let (provider, _) = makeProvider(dir: dir, row: 16, preview: 16)
+            let (provider, _) = makeProvider(dir: dir, maxPx: 16)
             for wallpaper in wallpapers {
-                #expect(provider.image(for: wallpaper, sizeClass: .row) != nil)
+                #expect(provider.image(for: wallpaper) != nil)
             }
 
             let count = provider.memoryCacheCount()

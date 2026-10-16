@@ -305,16 +305,13 @@ public final class CorridorView: NSView {
                                      : library[slot.index]
             // One thumbnail size for every card, because the cards are tall and a wide
             // wallpaper aspect-fills them. The collapsed centre card alone renders at
-            // about 1512 px on the long side on a 1512-wide Retina display, so the small
-            // thumbnail made everything visibly soft. Using a single class also means the
-            // size never changes as a card slides into the centre, so there is no decode
-            // stall and nothing to preload.
-            let wanted: ThumbSizeClass = .row
-
-            if reloadContents || card.wallpaper?.path != wallpaper.path
-                || card.sizeClass != wanted {
-                let image = provider.image(for: wallpaper, sizeClass: wanted)
-                card.setWallpaper(wallpaper, contents: image, sizeClass: wanted)
+            // about 1512 px on the long side on a 1512-wide Retina display, so a smaller
+            // thumbnail made everything visibly soft. The single size also means the image
+            // never changes as a card slides into the centre, so there is no decode stall
+            // and nothing to preload.
+            if reloadContents || card.wallpaper?.path != wallpaper.path {
+                let image = provider.image(for: wallpaper)
+                card.setWallpaper(wallpaper, contents: image)
             }
             if debugColours {
                 card.setContents(CorridorView.solidImage(forSlot: index))

@@ -211,7 +211,7 @@ public struct CLI {
     }
 
     static func reportWarnings(_ warnings: [String], _ environment: CLIEnvironment, config: Config) {
-        guard config.logLevel != "silent", config.logLevel != "error" else { return }
+        guard config.logLevel.showsWarnings else { return }
         for warning in warnings {
             environment.output.err("walle: warning: \(warning)")
         }
@@ -506,6 +506,9 @@ public struct CLI {
         for warning in result.warnings {
             environment.output.err("walle: warning: \(warning)")
         }
+        if config.logLevel.showsInfo {
+            environment.output.err("walle: scanned \(result.wallpapers.count) wallpapers")
+        }
 
         var wallpapers = result.wallpapers
         if let limit = try options.int("limit") {
@@ -660,7 +663,7 @@ public struct CLI {
         }
 
         config.wallpaperDirs.append(root)
-        try config.save(to: environment.paths.configFile)
+        try config.save(to: environment.paths.configFile, updating: ["wallpaper_dirs"])
 
         if options.has("json") {
             try emitJSON(["added": root, "path": resolved, "created": created,
@@ -688,7 +691,7 @@ public struct CLI {
         guard config.wallpaperDirs.count < before else {
             throw CLIError("not a configured directory: \(target)")
         }
-        try config.save(to: environment.paths.configFile)
+        try config.save(to: environment.paths.configFile, updating: ["wallpaper_dirs"])
 
         if options.has("json") {
             try emitJSON(["removed": target, "roots": config.wallpaperDirs], to: environment)
@@ -711,7 +714,7 @@ public struct CLI {
         }
         var (config, _) = loadConfig(environment)
         config.wallpaperDirs = [root]
-        try config.save(to: environment.paths.configFile)
+        try config.save(to: environment.paths.configFile, updating: ["wallpaper_dirs"])
 
         if options.has("json") {
             try emitJSON(["roots": config.wallpaperDirs], to: environment)
@@ -788,7 +791,7 @@ public struct CLI {
                         at: WallpaperStore.indexURL(environment: environment.environment),
                         liveSpaces: WallpaperStore.liveSpaceUUIDs(),
                         sourcePath: appliedPath)
-                    if settings.logLevel != "silent" {
+                    if settings.logLevel.showsStatus {
                         reportSync(result, environment)
                     }
                 } catch {
@@ -928,8 +931,7 @@ public struct CLI {
 
         // Thumbnail cache
         let cache = ThumbnailCache(directory: environment.paths.thumbnailsDir,
-                                   rowMaxPx: config.thumbMaxPx,
-                                   previewMaxPx: config.previewMaxPx)
+                                   maxPx: config.thumbMaxPx)
         let cacheBytes = cache.cacheSizeBytes()
         checks.append(("thumbnail cache", cacheBytes > 0,
                        String(cacheBytes) + " bytes in " + environment.paths.thumbnailsDir.path
@@ -1085,30 +1087,28 @@ public struct CLI {
         if let answer = capturePicker(["--thumb-size"], environment), let parsed = Int(answer) {
             thumbPixels = parsed
         }
-        let cache = ThumbnailCache(directory: cacheDir,
-                                   rowMaxPx: thumbPixels,
-                                   previewMaxPx: max(config.previewMaxPx, thumbPixels))
+        let cache = ThumbnailCache(directory: cacheDir, maxPx: thumbPixels)
+        if config.logLevel.showsInfo {
+            environment.output.err("walle: building thumbnails at \(thumbPixels) px for "
+                                   + "\(scan.wallpapers.count) wallpapers")
+        }
 
         let started = Date()
         var generated = 0
         var failed = 0
         var failures: [String] = []
 
+        // One thumbnail per wallpaper: the picker uses a single size for every card.
         for wallpaper in scan.wallpapers {
-            // One size class: the picker uses the same thumbnail for every card, so
-            // building a second set would only waste disk and time.
-            for sizeClass in [ThumbSizeClass.row] {
-                if cache.existingThumbnail(for: wallpaper, sizeClass: sizeClass) != nil {
-                    continue
-                }
-                do {
-                    _ = try cache.thumbnail(for: wallpaper, sizeClass: sizeClass)
-                    generated += 1
-                } catch {
-                    failed += 1
-                    failures.append(wallpaper.name + " (" + sizeClass.rawValue + "): "
-                                    + String(describing: error))
-                }
+            if cache.existingThumbnail(for: wallpaper) != nil {
+                continue
+            }
+            do {
+                _ = try cache.thumbnail(for: wallpaper)
+                generated += 1
+            } catch {
+                failed += 1
+                failures.append(wallpaper.name + ": " + String(describing: error))
             }
         }
 
@@ -1231,7 +1231,7 @@ public struct CLI {
         }
         // Validation runs on the way out so the file on disk is always usable.
         let (clean, warnings) = config.sanitized()
-        try clean.save(to: environment.paths.configFile)
+        try clean.save(to: environment.paths.configFile, updating: [key])
         if options.has("json") {
             try emitJSON(["key": key, "value": clean.value(forKey: key) ?? "",
                           "warnings": warnings], to: environment)
@@ -1253,7 +1253,7 @@ public struct CLI {
         }
         var (config, _) = loadConfig(environment)
         _ = config.apply(key: key, value: defaultValue)
-        try config.save(to: environment.paths.configFile)
+        try config.save(to: environment.paths.configFile, updating: [key])
         if options.has("json") {
             try emitJSON(["key": key, "value": config.value(forKey: key) ?? ""], to: environment)
         } else {

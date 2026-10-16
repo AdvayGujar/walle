@@ -62,8 +62,10 @@ HEADLESS MODES
 let paths = WallePaths.resolve()
 let (rawConfig, configWarnings) = Config.load(from: paths.configFile)
 let (config, configSanitizeWarnings) = rawConfig.sanitized()
-for warning in configWarnings + configSanitizeWarnings {
-    writeError("warning: " + warning)
+if config.logLevel.showsWarnings {
+    for warning in configWarnings + configSanitizeWarnings {
+        writeError("warning: " + warning)
+    }
 }
 
 let setter = NSWorkspaceSetter()
@@ -82,16 +84,15 @@ func makeProvider(library: [Wallpaper], width: Double, height: Double) -> Thumbn
     let required = geometry.minimumThumbnailPixels(backingScale: 2, widestAspect: widest)
     let pixels = max(config.thumbMaxPx, required)
     return ThumbnailProvider(
-        cache: ThumbnailCache(directory: paths.thumbnailsDir,
-                              rowMaxPx: pixels,
-                              previewMaxPx: max(config.previewMaxPx, pixels)),
-        rowMaxPx: pixels,
-        previewMaxPx: max(config.previewMaxPx, pixels))
+        cache: ThumbnailCache(directory: paths.thumbnailsDir, maxPx: pixels),
+        maxPx: pixels)
 }
 
 func loadLibrary() -> [Wallpaper] {
     let scan = LibraryScanner(config: config, home: paths.home).scan()
-    for warning in scan.warnings { writeError("warning: " + warning) }
+    if config.logLevel.showsWarnings {
+        for warning in scan.warnings { writeError("warning: " + warning) }
+    }
     return scan.wallpapers
 }
 
@@ -199,8 +200,7 @@ case "--snapshot":
 case "--selftest":
     let started = Date()
     let cache = ThumbnailCache(directory: paths.thumbnailsDir,
-                              rowMaxPx: config.thumbMaxPx,
-                              previewMaxPx: config.previewMaxPx)
+                               maxPx: config.thumbMaxPx)
     var object: [String: Any] = [
         "screens": NSScreen.screens.count,
         "configFile": paths.configFile.path,

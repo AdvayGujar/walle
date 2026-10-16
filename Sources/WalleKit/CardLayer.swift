@@ -11,7 +11,6 @@ import WalleCore
 final class CardLayer: CALayer {
 
     private(set) var wallpaper: Wallpaper?
-    private(set) var sizeClass: ThumbSizeClass?
 
     private let imageLayer = CALayer()
     private let maskLayer = CAShapeLayer()
@@ -35,9 +34,8 @@ final class CardLayer: CALayer {
 
     required init?(coder: NSCoder) { fatalError("CardLayer is created in code only") }
 
-    func setWallpaper(_ wallpaper: Wallpaper, contents image: CGImage?, sizeClass: ThumbSizeClass) {
+    func setWallpaper(_ wallpaper: Wallpaper, contents image: CGImage?) {
         self.wallpaper = wallpaper
-        self.sizeClass = sizeClass
         imageLayer.contents = image
     }
 
