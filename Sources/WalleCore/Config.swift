@@ -258,6 +258,14 @@ public struct Config: Sendable, Equatable {
                   set: { config, value in config.logLevel = LogLevel.parse(value) ?? config.logLevel }),
     ]
 
+    /// Keys that existed in earlier versions and no longer do anything.
+    ///
+    /// They are recognised so an existing config keeps loading silently instead of
+    /// reporting an "unknown key" on every command and failing `walle doctor`; a
+    /// genuinely misspelled key is still reported. Add to this set whenever a key is
+    /// removed — walle never rewrites an existing config for the user.
+    static let retiredKeys: Set<String> = ["type_to_filter", "preview_max_px"]
+
     public static func parse(_ text: String) -> (config: Config, warnings: [String]) {
         var config = Config()
         var warnings: [String] = []
@@ -270,7 +278,7 @@ public struct Config: Sendable, Equatable {
             }
             let key = line[..<eq].trimmingCharacters(in: .whitespaces)
             let value = line[line.index(after: eq)...].trimmingCharacters(in: .whitespaces)
-            if !config.apply(key: key, value: value) {
+            if !config.apply(key: key, value: value), !Config.retiredKeys.contains(key) {
                 warnings.append("line \(lineNumber + 1): unknown key \(key), ignored")
             }
         }

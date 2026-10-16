@@ -48,6 +48,22 @@ struct ConfigTests {
         #expect(config.recursive == false)
     }
 
+    @Test func retiredKeysAreIgnoredQuietlyButRealTyposStillWarn() {
+        // Keys walle removed (type_to_filter in module1opt, preview_max_px in the
+        // follow-up) must not make an upgraded config warn; a genuine typo still must.
+        let (config, warnings) = Config.parse("""
+        preview_max_px = 1600
+        type_to_filter = true
+        slots = 5
+        """)
+        #expect(warnings.isEmpty)
+        #expect(config.slots == 5)
+
+        let (_, typoWarnings) = Config.parse("slott = 7\n")
+        #expect(typoWarnings.count == 1)
+        #expect(typoWarnings.first?.contains("unknown key") == true)
+    }
+
     @Test func unknownKeyWarnsAndApplyReturnsFalse() {
         var config = Config()
         #expect(config.apply(key: "mystery_key", value: "1") == false)
