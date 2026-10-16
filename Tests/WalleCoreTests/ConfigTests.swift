@@ -145,6 +145,33 @@ struct ConfigTests {
         #expect(warnings.contains { $0.contains("wallpaper_dirs") && $0.contains("empty") })
     }
 
+    @Test func logLevelParsesSpellingsAndKeepsPreviousOnGarbage() {
+        #expect(LogLevel.parse("WARN") == .warn)
+        #expect(LogLevel.parse(" warning ") == .warn)
+        #expect(LogLevel.parse("quiet") == .silent)
+        #expect(LogLevel.parse("error") == .error)
+        #expect(LogLevel.parse("info") == .info)
+        #expect(LogLevel.parse("bogus") == nil)
+
+        var config = Config()
+        config.apply(key: "log_level", value: "info")
+        #expect(config.logLevel == .info)
+        // A malformed level leaves the previous one alone rather than failing the load.
+        config.apply(key: "log_level", value: "bogus")
+        #expect(config.logLevel == .info)
+    }
+
+    @Test func logLevelControlsWarningsStatusAndInfo() {
+        #expect(LogLevel.silent.showsWarnings == false)
+        #expect(LogLevel.error.showsWarnings == false)
+        #expect(LogLevel.warn.showsWarnings == true)
+        #expect(LogLevel.info.showsWarnings == true)
+        #expect(LogLevel.silent.showsStatus == false)
+        #expect(LogLevel.error.showsStatus == true)
+        #expect(LogLevel.warn.showsInfo == false)
+        #expect(LogLevel.info.showsInfo == true)
+    }
+
     @Test func enumParsingIsCaseInsensitiveAndRejectsGarbage() {
         #expect(SortMode.parse("NaMe") == .name)
         #expect(SortMode.parse(" MTIME ") == .mtime)
@@ -168,7 +195,7 @@ struct ConfigTests {
             config.slots = 5
             config.wallpaperDirs = ["/tmp/one", "/tmp/two"]
             config.sort = .random
-            config.logLevel = "debug"
+            config.logLevel = .info
 
             let url = dir.appendingPathComponent("config")
             try config.save(to: url)

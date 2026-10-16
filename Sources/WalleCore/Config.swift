@@ -40,6 +40,33 @@ public enum SpacesMode: String, Sendable, CaseIterable {
     }
 }
 
+/// How much walle reports. Errors are always printed, so a failing command can say why;
+/// the level controls warnings and status chatter.
+public enum LogLevel: String, Sendable, CaseIterable {
+    case silent
+    case error
+    case warn
+    case info
+
+    public static func parse(_ raw: String) -> LogLevel? {
+        switch raw.lowercased().trimmingCharacters(in: .whitespaces) {
+        case "silent", "quiet", "off", "none": return .silent
+        case "error": return .error
+        case "warn", "warning": return .warn
+        case "info": return .info
+        default: return nil
+        }
+    }
+
+    /// Warnings are diagnostic, so they are shown from `warn` up.
+    public var showsWarnings: Bool { self == .warn || self == .info }
+    /// Status lines (what the Space sync did, for example) are shown unless nothing at
+    /// all was asked for.
+    public var showsStatus: Bool { self != .silent }
+    /// Extra step-by-step detail.
+    public var showsInfo: Bool { self == .info }
+}
+
 /// Everything tunable, parsed from a plain key = value file.
 ///
 /// Geometry is expressed in design units for a 1920-wide screen. Layout multiplies every
@@ -76,7 +103,7 @@ public struct Config: Sendable, Equatable {
     public var fillMode: FillMode
     public var spaces: SpacesMode
     public var thumbMaxPx: Int
-    public var logLevel: String
+    public var logLevel: LogLevel
 
     public init(
         wallpaperDirs: [String] = ["~/Downloads/wallpaper"],
@@ -105,7 +132,7 @@ public struct Config: Sendable, Equatable {
         fillMode: FillMode = .fill,
         spaces: SpacesMode = .current,
         thumbMaxPx: Int = 1600,
-        logLevel: String = "warn"
+        logLevel: LogLevel = .warn
     ) {
         self.wallpaperDirs = wallpaperDirs
         self.recursive = recursive
@@ -231,8 +258,8 @@ public struct Config: Sendable, Equatable {
                   get: { String($0.thumbMaxPx) },
                   set: { config, value in config.thumbMaxPx = parseInt(value) ?? config.thumbMaxPx }),
         ConfigKey(name: "log_level",
-                  get: { $0.logLevel },
-                  set: { config, value in config.logLevel = value }),
+                  get: { $0.logLevel.rawValue },
+                  set: { config, value in config.logLevel = LogLevel.parse(value) ?? config.logLevel }),
     ]
 
     public static func parse(_ text: String) -> (config: Config, warnings: [String]) {

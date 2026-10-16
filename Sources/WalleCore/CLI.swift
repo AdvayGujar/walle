@@ -211,7 +211,7 @@ public struct CLI {
     }
 
     static func reportWarnings(_ warnings: [String], _ environment: CLIEnvironment, config: Config) {
-        guard config.logLevel != "silent", config.logLevel != "error" else { return }
+        guard config.logLevel.showsWarnings else { return }
         for warning in warnings {
             environment.output.err("walle: warning: \(warning)")
         }
@@ -506,6 +506,9 @@ public struct CLI {
         for warning in result.warnings {
             environment.output.err("walle: warning: \(warning)")
         }
+        if config.logLevel.showsInfo {
+            environment.output.err("walle: scanned \(result.wallpapers.count) wallpapers")
+        }
 
         var wallpapers = result.wallpapers
         if let limit = try options.int("limit") {
@@ -788,7 +791,7 @@ public struct CLI {
                         at: WallpaperStore.indexURL(environment: environment.environment),
                         liveSpaces: WallpaperStore.liveSpaceUUIDs(),
                         sourcePath: appliedPath)
-                    if settings.logLevel != "silent" {
+                    if settings.logLevel.showsStatus {
                         reportSync(result, environment)
                     }
                 } catch {
@@ -1085,6 +1088,10 @@ public struct CLI {
             thumbPixels = parsed
         }
         let cache = ThumbnailCache(directory: cacheDir, maxPx: thumbPixels)
+        if config.logLevel.showsInfo {
+            environment.output.err("walle: building thumbnails at \(thumbPixels) px for "
+                                   + "\(scan.wallpapers.count) wallpapers")
+        }
 
         let started = Date()
         var generated = 0

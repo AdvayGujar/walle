@@ -62,7 +62,7 @@ public final class PickerController: NSObject, NSApplicationDelegate {
             backingScale: Double(screen.backingScaleFactor),
             widestAspect: widestAspect)
         let thumbPixels = max(config.thumbMaxPx, required)
-        if thumbPixels > config.thumbMaxPx {
+        if thumbPixels > config.thumbMaxPx, config.logLevel.showsWarnings {
             FileHandle.standardError.write(Data(
                 ("walle-picker: thumb_max_px is " + String(config.thumbMaxPx)
                  + " but these cards need " + String(required)

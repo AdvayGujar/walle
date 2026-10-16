@@ -62,8 +62,10 @@ HEADLESS MODES
 let paths = WallePaths.resolve()
 let (rawConfig, configWarnings) = Config.load(from: paths.configFile)
 let (config, configSanitizeWarnings) = rawConfig.sanitized()
-for warning in configWarnings + configSanitizeWarnings {
-    writeError("warning: " + warning)
+if config.logLevel.showsWarnings {
+    for warning in configWarnings + configSanitizeWarnings {
+        writeError("warning: " + warning)
+    }
 }
 
 let setter = NSWorkspaceSetter()
@@ -88,7 +90,9 @@ func makeProvider(library: [Wallpaper], width: Double, height: Double) -> Thumbn
 
 func loadLibrary() -> [Wallpaper] {
     let scan = LibraryScanner(config: config, home: paths.home).scan()
-    for warning in scan.warnings { writeError("warning: " + warning) }
+    if config.logLevel.showsWarnings {
+        for warning in scan.warnings { writeError("warning: " + warning) }
+    }
     return scan.wallpapers
 }
 
