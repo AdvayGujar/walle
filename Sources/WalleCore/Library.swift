@@ -264,13 +264,17 @@ public enum LibrarySort {
     public static func sort(_ items: [Wallpaper], mode: SortMode, seed: UInt64) -> [Wallpaper] {
         switch mode {
         case .name:
-            return items.sorted { lhs, rhs in
-                let left = lhs.name.lowercased()
-                let right = rhs.name.lowercased()
-                if left != right { return left < right }
-                if lhs.name != rhs.name { return lhs.name < rhs.name }
-                return lhs.path < rhs.path
-            }
+            // Fold each name once. Calling lowercased() inside the comparator allocates
+            // two strings per comparison (O(n log n) of them); decorating costs one per
+            // item. The case-sensitive and path tie-breaks preserve the old total order.
+            return items
+                .map { (item: $0, folded: $0.name.lowercased()) }
+                .sorted { lhs, rhs in
+                    if lhs.folded != rhs.folded { return lhs.folded < rhs.folded }
+                    if lhs.item.name != rhs.item.name { return lhs.item.name < rhs.item.name }
+                    return lhs.item.path < rhs.item.path
+                }
+                .map { $0.item }
         case .mtime:
             return items.sorted { lhs, rhs in
                 if lhs.modifiedAt != rhs.modifiedAt { return lhs.modifiedAt < rhs.modifiedAt }
