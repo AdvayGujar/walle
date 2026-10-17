@@ -214,6 +214,34 @@ struct LibraryTests {
         }
     }
 
+    @Test func aspectRatiosAreSkippedWhenNotRequested() throws {
+        try withTempDirectory { dir in
+            try writeImage(at: dir.appendingPathComponent("landscape.png"), width: 80, height: 60)
+            let result = scanner(dirs: [dir.path], home: dir)
+                .scan(includeAspectRatio: false)
+            #expect(result.wallpapers.count == 1)
+            #expect(result.wallpapers.first?.aspectRatio == nil)
+        }
+    }
+
+    @Test func everyAspectRatioIsCorrectWhenReadInParallel() throws {
+        try withTempDirectory { dir in
+            let sizes = [(800, 600), (300, 900), (1000, 250), (640, 480), (120, 360)]
+            for (index, size) in sizes.enumerated() {
+                try writeImage(at: dir.appendingPathComponent("img\(index).png"),
+                               width: size.0, height: size.1)
+            }
+            let result = scanner(dirs: [dir.path], home: dir).scan()
+            #expect(result.wallpapers.count == sizes.count)
+            for wallpaper in result.wallpapers {
+                let index = try #require(Int(wallpaper.name.dropFirst(3).dropLast(4)))
+                let expected = Double(sizes[index].0) / Double(sizes[index].1)
+                let aspect = try #require(wallpaper.aspectRatio)
+                #expect(abs(aspect - expected) < 0.01)
+            }
+        }
+    }
+
     @Test func aspectRatioIsNilForCorruptFiles() throws {
         try withTempDirectory { dir in
             let bad = dir.appendingPathComponent("bad.png")

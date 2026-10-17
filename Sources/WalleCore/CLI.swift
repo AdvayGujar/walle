@@ -502,7 +502,10 @@ public struct CLI {
             ? UInt64(Date().timeIntervalSince1970 * 1000)
             : 0
         let scanner = LibraryScanner(config: scanConfig, home: environment.paths.home)
-        let result = scanner.scan(extraDirs: extraDirs, seed: seed)
+        // Only the JSON listing exposes aspectRatio; the plain path listing would pay one
+        // ImageIO open per file for a value it never prints.
+        let result = scanner.scan(extraDirs: extraDirs, seed: seed,
+                                  includeAspectRatio: options.has("json"))
         for warning in result.warnings {
             environment.output.err("walle: warning: \(warning)")
         }
@@ -574,7 +577,8 @@ public struct CLI {
         reportWarnings(warnings, environment, config: config)
 
         let scanner = LibraryScanner(config: config, home: environment.paths.home)
-        let result = scanner.scan()
+        // dirs only needs counts and paths, never a thumbnail aspect ratio.
+        let result = scanner.scan(includeAspectRatio: false)
         for warning in result.warnings {
             environment.output.err("walle: warning: \(warning)")
         }

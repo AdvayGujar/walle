@@ -1,5 +1,6 @@
 import CoreGraphics
 import Darwin
+import Dispatch
 import Foundation
 import ImageIO
 
@@ -99,7 +100,12 @@ public struct LibraryScanner: Sendable {
 
     /// `seed` only matters for the .random sort; it stays a parameter so callers
     /// (and tests) can make the shuffle reproducible.
-    public func scan(extraDirs: [String] = [], seed: UInt64 = 0) -> ScanResult {
+    ///
+    /// `includeAspectRatio` defaults to on because the picker needs the widest aspect in
+    /// the library. Commands that never look at it pass false, which skips one ImageIO
+    /// open per file — the single largest cost of a scan.
+    public func scan(extraDirs: [String] = [], seed: UInt64 = 0,
+                     includeAspectRatio: Bool = true) -> ScanResult {
         var wallpapers: [Wallpaper] = []
         var warnings: [String] = []
         var rootCounts: [String: Int] = [:]
@@ -122,8 +128,6 @@ public struct LibraryScanner: Sendable {
             let fileID = String(device) + ":" + String(inode)
             if inode != 0, seenFileIDs.contains(fileID) { return nil }
 
-            let aspectRatio = walleImageAspectRatio(at: canonical)
-
             seenPaths.insert(path)
             if inode != 0 { seenFileIDs.insert(fileID) }
 
@@ -133,7 +137,7 @@ public struct LibraryScanner: Sendable {
                 name: canonical.lastPathComponent,
                 modifiedAt: info?.modifiedAt ?? Date(timeIntervalSince1970: 0),
                 fileSize: info?.size ?? 0,
-                aspectRatio: aspectRatio)
+                aspectRatio: nil)
         }
 
         // Distinct identity for a directory, used to break symlink cycles. stat follows
@@ -223,6 +227,13 @@ public struct LibraryScanner: Sendable {
             rootCounts[raw] = contributed
         }
 
+        if includeAspectRatio, !wallpapers.isEmpty {
+            let ratios = walleAspectRatios(for: wallpapers.map(\.url))
+            for index in wallpapers.indices {
+                wallpapers[index].aspectRatio = ratios[index]
+            }
+        }
+
         return ScanResult(
             wallpapers: LibrarySort.sort(wallpapers, mode: config.sort, seed: seed),
             warnings: warnings,
@@ -308,6 +319,23 @@ private struct WalleSplitMix64 {
         z = (z ^ (z >> 27)) &* 0x94D0_49BB_1331_11EB
         return z ^ (z >> 31)
     }
+}
+
+/// Reads the aspect ratio of every source, spreading the ImageIO work across cores.
+///
+/// Each `CGImageSource` is independent, so this is safe concurrently; results are written
+/// by index, which keeps the input order (and therefore every caller's ordering) exact.
+private func walleAspectRatios(for urls: [URL]) -> [Double?] {
+    guard urls.count > 1 else {
+        return urls.map { walleImageAspectRatio(at: $0) }
+    }
+    var ratios = [Double?](repeating: nil, count: urls.count)
+    ratios.withUnsafeMutableBufferPointer { buffer in
+        DispatchQueue.concurrentPerform(iterations: urls.count) { index in
+            buffer[index] = walleImageAspectRatio(at: urls[index])
+        }
+    }
+    return ratios
 }
 
 /// Reads only the image properties (never decodes pixels) to obtain width / height.
