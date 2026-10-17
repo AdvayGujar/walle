@@ -502,7 +502,10 @@ public struct CLI {
             ? UInt64(Date().timeIntervalSince1970 * 1000)
             : 0
         let scanner = LibraryScanner(config: scanConfig, home: environment.paths.home)
-        let result = scanner.scan(extraDirs: extraDirs, seed: seed)
+        // Only the JSON listing exposes aspectRatio; the plain path listing would pay one
+        // ImageIO open per file for a value it never prints.
+        let result = scanner.scan(extraDirs: extraDirs, seed: seed,
+                                  includeAspectRatio: options.has("json"))
         for warning in result.warnings {
             environment.output.err("walle: warning: \(warning)")
         }
@@ -574,7 +577,8 @@ public struct CLI {
         reportWarnings(warnings, environment, config: config)
 
         let scanner = LibraryScanner(config: config, home: environment.paths.home)
-        let result = scanner.scan()
+        // dirs only needs counts and paths, never a thumbnail aspect ratio.
+        let result = scanner.scan(includeAspectRatio: false)
         for warning in result.warnings {
             environment.output.err("walle: warning: \(warning)")
         }
@@ -1090,7 +1094,12 @@ public struct CLI {
         // everything on first open. That is why keeping thumb_max_px in step by hand was
         // ever necessary, and this is what makes it unnecessary.
         var thumbPixels = config.thumbMaxPx
-        if let answer = capturePicker(["--thumb-size"], environment), let parsed = Int(answer) {
+        // The picker applies the display's geometric floor. Hand it the widest aspect we
+        // already measured, so building the cache does not scan the library a second time.
+        let widestAspect = walleWidestAspect(scan.wallpapers)
+        if let answer = capturePicker(["--thumb-size", "--widest-aspect", String(widestAspect)],
+                                      environment),
+           let parsed = Int(answer) {
             thumbPixels = parsed
         }
         let cache = ThumbnailCache(directory: cacheDir, maxPx: thumbPixels)
@@ -1100,19 +1109,20 @@ public struct CLI {
         }
 
         let started = Date()
+        // One thumbnail per wallpaper: the picker uses a single size for every card.
+        // The batch runs concurrently and returns outcomes in library order, so the
+        // summary and failure list stay deterministic.
+        let outcomes = cache.ensureThumbnails(for: scan.wallpapers)
         var generated = 0
         var failed = 0
         var failures: [String] = []
-
-        // One thumbnail per wallpaper: the picker uses a single size for every card.
-        for wallpaper in scan.wallpapers {
-            if cache.existingThumbnail(for: wallpaper) != nil {
-                continue
-            }
-            do {
-                _ = try cache.thumbnail(for: wallpaper)
+        for (wallpaper, outcome) in zip(scan.wallpapers, outcomes) {
+            switch outcome {
+            case .existing:
+                break
+            case .generated:
                 generated += 1
-            } catch {
+            case .failed(let error):
                 failed += 1
                 failures.append(wallpaper.name + ": " + String(describing: error))
             }

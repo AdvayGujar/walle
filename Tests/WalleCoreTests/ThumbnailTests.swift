@@ -82,6 +82,17 @@ struct ThumbnailTests {
         }
     }
 
+    @Test func cacheNameIsTheStableLowercaseHexOfItsIdentity() {
+        // Locks the digest of path + mtime bit pattern + budget. The hex encoder is a
+        // performance detail; the filename every existing cache already uses is not.
+        let wallpaper = Wallpaper(
+            url: URL(fileURLWithPath: "/tmp/x.jpg"), path: "/tmp/x.jpg", name: "x.jpg",
+            modifiedAt: Date(timeIntervalSince1970: 0), fileSize: 0, aspectRatio: nil)
+        let cache = ThumbnailCache(directory: URL(fileURLWithPath: "/tmp/thumbs"), maxPx: 512)
+        #expect(cache.cacheURL(for: wallpaper).lastPathComponent
+            == "d0e5e3896be023c0fab1efb079130ea0d3de5f4bef06108fa26671c9c2201cbb.jpg")
+    }
+
     @Test func existingThumbnailAppearsOnlyAfterGeneration() throws {
         try withTempDirectory { dir in
             let imageURL = dir.appendingPathComponent("one.png")
@@ -146,6 +157,49 @@ struct ThumbnailTests {
                 _ = try cache.thumbnail(for: wallpaper)
             }
             #expect(cache.existingThumbnail(for: wallpaper) == nil)
+        }
+    }
+
+    @Test func batchBuildReportsExistingGeneratedAndFailedInInputOrder() throws {
+        try withTempDirectory { dir in
+            let source = dir.appendingPathComponent("src", isDirectory: true)
+            try FileManager.default.createDirectory(at: source, withIntermediateDirectories: true)
+            let names = (0..<6).map { "img\($0).png" }
+            for name in names {
+                try writeImage(at: source.appendingPathComponent(name), width: 40, height: 30)
+            }
+            let bad = source.appendingPathComponent("bad.png")
+            try Data([0xDE, 0xAD, 0xBE, 0xEF]).write(to: bad)
+
+            var config = Config()
+            config.wallpaperDirs = [source.path]
+            let result = LibraryScanner(config: config, home: dir).scan()
+            let cache = cache(in: dir, maxPx: 32)
+
+            // img0 is already cached, so the batch must report it as existing.
+            let cachedOne = try #require(result.wallpapers.first { $0.name == "img0.png" })
+            try cache.thumbnail(for: cachedOne)
+
+            let outcomes = cache.ensureThumbnails(for: result.wallpapers)
+            #expect(outcomes.count == result.wallpapers.count)
+            for (wallpaper, outcome) in zip(result.wallpapers, outcomes) {
+                switch wallpaper.name {
+                case "img0.png":
+                    #expect(outcome == .existing)
+                case "bad.png":
+                    if case .failed = outcome {} else {
+                        Issue.record("expected bad.png to fail, got \(outcome)")
+                    }
+                default:
+                    #expect(outcome == .generated)
+                }
+            }
+
+            // A second batch is all hits and the same order.
+            let again = cache.ensureThumbnails(for: result.wallpapers)
+            #expect(again.enumerated().allSatisfy { index, outcome in
+                result.wallpapers[index].name == "bad.png" ? outcome != .existing : outcome == .existing
+            })
         }
     }
 
