@@ -225,7 +225,6 @@ public struct LibraryScanner: Sendable {
                     if name.hasPrefix(".") { continue }
 
                     guard let values = try? entry.resourceValues(forKeys: keySet) else { continue }
-                    if values.isHidden == true { continue }
 
                     var isDirectory = values.isDirectory ?? false
                     let isSymbolicLink = values.isSymbolicLink ?? false
@@ -240,6 +239,9 @@ public struct LibraryScanner: Sendable {
                         continue
                     }
 
+                    // The hidden flag only filtered files before this refactor; a plain
+                    // directory with the Finder invisible bit is still walked, as it was.
+                    if values.isHidden == true { continue }
                     guard walleIsImageExtension(name) else { continue }
                     if walleHasFinderInfoSkipFlag(entry) { continue }
 
