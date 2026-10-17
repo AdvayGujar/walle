@@ -1,4 +1,5 @@
 import CoreGraphics
+import Darwin
 import Foundation
 import ImageIO
 
@@ -47,6 +48,37 @@ public struct ScanResult: Sendable {
     }
 }
 
+/// The handful of `stat` fields the scan needs, read in one syscall.
+///
+/// `FileManager.attributesOfItem` builds a full attribute dictionary per file, which
+/// measured 152 ms per 2 000 files; `stat(2)` fills the same fields for a fraction of
+/// that. Foundation's dictionaries stay in the public API; this is only the hot path.
+private struct WalleFileStat {
+    var device: UInt64
+    var inode: UInt64
+    var size: Int
+    var modifiedAt: Date
+    var isDirectory: Bool
+}
+
+/// Follows symlinks, which matches the scanner's historical behaviour of resolving a
+/// link before reading its metadata.
+private func walleStat(at url: URL) -> WalleFileStat? {
+    url.withUnsafeFileSystemRepresentation { rawPath -> WalleFileStat? in
+        guard let rawPath else { return nil }
+        var info = stat()
+        guard stat(rawPath, &info) == 0 else { return nil }
+        let seconds = TimeInterval(info.st_mtimespec.tv_sec)
+        let nanos = TimeInterval(info.st_mtimespec.tv_nsec) / 1_000_000_000
+        return WalleFileStat(
+            device: UInt64(info.st_dev),
+            inode: UInt64(info.st_ino),
+            size: Int(info.st_size),
+            modifiedAt: Date(timeIntervalSince1970: seconds + nanos),
+            isDirectory: (info.st_mode & S_IFMT) == S_IFDIR)
+    }
+}
+
 /// Walks the configured wallpaper roots and returns every image it can use.
 ///
 /// The scanner is deliberately forgiving: a broken root becomes a warning and the
@@ -75,19 +107,21 @@ public struct LibraryScanner: Sendable {
         var seenFileIDs = Set<String>()
 
         // Records one candidate, or nil when it was already seen.
-        func record(_ url: URL) -> Wallpaper? {
-            let canonical = url.resolvingSymlinksInPath().standardizedFileURL
+        func record(_ url: URL, isSymbolicLink: Bool) -> Wallpaper? {
+            // The root is resolved once before walking, so ordinary entries are canonical
+            // already; only a genuine link costs a resolution here.
+            let canonical = isSymbolicLink
+                ? url.resolvingSymlinksInPath().standardizedFileURL
+                : url.standardizedFileURL
             let path = canonical.path
             if seenPaths.contains(path) { return nil }
 
-            let attributes = try? fileManager.attributesOfItem(atPath: path)
-            let device = (attributes?[.systemNumber] as? NSNumber)?.uint64Value ?? 0
-            let inode = (attributes?[.systemFileNumber] as? NSNumber)?.uint64Value ?? 0
+            let info = walleStat(at: canonical)
+            let device = info?.device ?? 0
+            let inode = info?.inode ?? 0
             let fileID = String(device) + ":" + String(inode)
             if inode != 0, seenFileIDs.contains(fileID) { return nil }
 
-            let modifiedAt = (attributes?[.modificationDate] as? Date) ?? Date(timeIntervalSince1970: 0)
-            let fileSize = (attributes?[.size] as? NSNumber)?.intValue ?? 0
             let aspectRatio = walleImageAspectRatio(at: canonical)
 
             seenPaths.insert(path)
@@ -97,19 +131,17 @@ public struct LibraryScanner: Sendable {
                 url: canonical,
                 path: path,
                 name: canonical.lastPathComponent,
-                modifiedAt: modifiedAt,
-                fileSize: fileSize,
+                modifiedAt: info?.modifiedAt ?? Date(timeIntervalSince1970: 0),
+                fileSize: info?.size ?? 0,
                 aspectRatio: aspectRatio)
         }
 
-        // Distinct identity for a directory, used to break symlink cycles.
+        // Distinct identity for a directory, used to break symlink cycles. stat follows
+        // links, so two paths to one directory share an id and a cycle cannot hang the walk.
         func directoryID(_ url: URL) -> String? {
-            guard let attributes = try? fileManager.attributesOfItem(atPath: url.path) else {
-                return nil
+            if let info = walleStat(at: url), info.inode != 0 {
+                return String(info.device) + ":" + String(info.inode)
             }
-            let device = (attributes[.systemNumber] as? NSNumber)?.uint64Value ?? 0
-            let inode = (attributes[.systemFileNumber] as? NSNumber)?.uint64Value ?? 0
-            if inode != 0 { return String(device) + ":" + String(inode) }
             return url.resolvingSymlinksInPath().standardizedFileURL.path
         }
 
@@ -117,7 +149,11 @@ public struct LibraryScanner: Sendable {
             .filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
 
         for raw in rawRoots {
+            // Resolve the root once. Resolving every walked path cost ~47 ms per 2 000
+            // ordinary files; entries under a resolved root are canonical already.
             let rootURL = walleExpand(raw, home: home)
+                .resolvingSymlinksInPath()
+                .standardizedFileURL
             var isDirectory: ObjCBool = false
             guard fileManager.fileExists(atPath: rootURL.path, isDirectory: &isDirectory) else {
                 warnings.append("wallpaper directory does not exist: " + raw)
@@ -143,7 +179,10 @@ public struct LibraryScanner: Sendable {
                 if visitedDirectories.contains(id) { return }
                 visitedDirectories.insert(id)
 
-                let keys: [URLResourceKey] = [.isHiddenKey, .isRegularFileKey]
+                // The listing prefetches these, so reading them below is a cache hit rather
+                // than the extra stat that `fileExists`/a second `resourceValues` call made.
+                let keys: [URLResourceKey] = [.isDirectoryKey, .isSymbolicLinkKey, .isHiddenKey]
+                let keySet = Set(keys)
                 guard let entries = try? fileManager.contentsOfDirectory(
                     at: directory, includingPropertiesForKeys: keys, options: []) else {
                     return
@@ -151,25 +190,29 @@ public struct LibraryScanner: Sendable {
 
                 for entry in entries {
                     let name = entry.lastPathComponent
+                    // Dot-prefixed names already cover .DS_Store and .localized.
                     if name.hasPrefix(".") { continue }
-                    if name == ".DS_Store" || name == ".localized" { continue }
 
-                    var entryIsDirectory: ObjCBool = false
-                    guard fileManager.fileExists(atPath: entry.path, isDirectory: &entryIsDirectory) else {
-                        continue
+                    guard let values = try? entry.resourceValues(forKeys: keySet) else { continue }
+                    if values.isHidden == true { continue }
+
+                    var isDirectory = values.isDirectory ?? false
+                    let isSymbolicLink = values.isSymbolicLink ?? false
+                    if isSymbolicLink {
+                        // A link's resource values describe the link, not its target, so the
+                        // target needs one stat. A broken link is skipped, as it was before.
+                        guard let target = walleStat(at: entry) else { continue }
+                        isDirectory = target.isDirectory
                     }
-                    if entryIsDirectory.boolValue {
+                    if isDirectory {
                         if config.recursive { walk(entry) }
                         continue
                     }
 
                     guard walleIsImageExtension(name) else { continue }
-                    if let values = try? entry.resourceValues(forKeys: [.isHiddenKey]), values.isHidden == true {
-                        continue
-                    }
                     if walleHasFinderInfoSkipFlag(entry) { continue }
 
-                    if let wallpaper = record(entry) {
+                    if let wallpaper = record(entry, isSymbolicLink: isSymbolicLink) {
                         wallpapers.append(wallpaper)
                         contributed += 1
                     }
