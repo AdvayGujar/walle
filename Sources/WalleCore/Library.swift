@@ -49,6 +49,33 @@ public struct ScanResult: Sendable {
     }
 }
 
+/// Collects results written from concurrent work, by index.
+///
+/// `DispatchQueue.concurrentPerform` takes a @Sendable closure, so it cannot capture a
+/// mutable array or an unsafe buffer pointer without a concurrency warning (and a data
+/// race if the indices ever overlap). This box owns the storage behind a lock; the
+/// parallel scans and thumbnail batch all write through it.
+final class WalleConcurrentResults<Value>: @unchecked Sendable {
+    private let lock = NSLock()
+    private var storage: [Value]
+
+    init(repeating value: Value, count: Int) {
+        storage = Array(repeating: value, count: count)
+    }
+
+    func set(_ value: Value, at index: Int) {
+        lock.lock()
+        storage[index] = value
+        lock.unlock()
+    }
+
+    var values: [Value] {
+        lock.lock()
+        defer { lock.unlock() }
+        return storage
+    }
+}
+
 /// The handful of `stat` fields the scan needs, read in one syscall.
 ///
 /// `FileManager.attributesOfItem` builds a full attribute dictionary per file, which
@@ -329,13 +356,11 @@ private func walleAspectRatios(for urls: [URL]) -> [Double?] {
     guard urls.count > 1 else {
         return urls.map { walleImageAspectRatio(at: $0) }
     }
-    var ratios = [Double?](repeating: nil, count: urls.count)
-    ratios.withUnsafeMutableBufferPointer { buffer in
-        DispatchQueue.concurrentPerform(iterations: urls.count) { index in
-            buffer[index] = walleImageAspectRatio(at: urls[index])
-        }
+    let ratios = WalleConcurrentResults<Double?>(repeating: nil, count: urls.count)
+    DispatchQueue.concurrentPerform(iterations: urls.count) { index in
+        ratios.set(walleImageAspectRatio(at: urls[index]), at: index)
     }
-    return ratios
+    return ratios.values
 }
 
 /// The widest aspect ratio in the library, with portrait images folded to their long side.

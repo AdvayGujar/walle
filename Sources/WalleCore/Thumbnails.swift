@@ -1,5 +1,6 @@
 import CoreGraphics
 import CryptoKit
+import Dispatch
 import Foundation
 import ImageIO
 import UniformTypeIdentifiers
@@ -11,6 +12,13 @@ public enum ThumbnailError: Error, Equatable, Sendable {
     case thumbnailCreationFailed(URL)
     case destinationCreationFailed(URL)
     case writeFailed(URL)
+}
+
+/// What a batch build did for one wallpaper.
+public enum ThumbnailOutcome: Sendable, Equatable {
+    case existing
+    case generated
+    case failed(ThumbnailError)
 }
 
 /// Content-addressed JPEG thumbnails stored in one flat directory.
@@ -96,6 +104,33 @@ public struct ThumbnailCache: Sendable {
             throw ThumbnailError.writeFailed(destinationURL)
         }
         return destinationURL
+    }
+
+    /// Generates every missing thumbnail, spreading the ImageIO work across cores.
+    ///
+    /// Each wallpaper writes its own cache file and uses its own ImageIO objects, so the
+    /// loop is safe to run concurrently. Outcomes come back in input order, which keeps a
+    /// caller's report deterministic even though the work finishes out of order.
+    public func ensureThumbnails(for wallpapers: [Wallpaper]) -> [ThumbnailOutcome] {
+        let outcomes = WalleConcurrentResults<ThumbnailOutcome>(repeating: .existing,
+                                                                count: wallpapers.count)
+        let cache = self
+        DispatchQueue.concurrentPerform(iterations: wallpapers.count) { index in
+            let wallpaper = wallpapers[index]
+            if cache.existingThumbnail(for: wallpaper) != nil {
+                outcomes.set(.existing, at: index)
+                return
+            }
+            do {
+                _ = try cache.thumbnail(for: wallpaper)
+                outcomes.set(.generated, at: index)
+            } catch let error as ThumbnailError {
+                outcomes.set(.failed(error), at: index)
+            } catch {
+                outcomes.set(.failed(.thumbnailCreationFailed(wallpaper.url)), at: index)
+            }
+        }
+        return outcomes.values
     }
 
     /// Deletes cached files whose source is gone or whose mtime no longer matches.

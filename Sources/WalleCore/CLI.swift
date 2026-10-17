@@ -1109,19 +1109,20 @@ public struct CLI {
         }
 
         let started = Date()
+        // One thumbnail per wallpaper: the picker uses a single size for every card.
+        // The batch runs concurrently and returns outcomes in library order, so the
+        // summary and failure list stay deterministic.
+        let outcomes = cache.ensureThumbnails(for: scan.wallpapers)
         var generated = 0
         var failed = 0
         var failures: [String] = []
-
-        // One thumbnail per wallpaper: the picker uses a single size for every card.
-        for wallpaper in scan.wallpapers {
-            if cache.existingThumbnail(for: wallpaper) != nil {
-                continue
-            }
-            do {
-                _ = try cache.thumbnail(for: wallpaper)
+        for (wallpaper, outcome) in zip(scan.wallpapers, outcomes) {
+            switch outcome {
+            case .existing:
+                break
+            case .generated:
                 generated += 1
-            } catch {
+            case .failed(let error):
                 failed += 1
                 failures.append(wallpaper.name + ": " + String(describing: error))
             }
