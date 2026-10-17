@@ -242,6 +242,21 @@ struct LibraryTests {
         }
     }
 
+    @Test func widestAspectFoldsPortraitsAndFallsBackForAnEmptyLibrary() {
+        #expect(walleWidestAspect([]) == 1.8)
+
+        func item(_ aspect: Double?) -> Wallpaper {
+            Wallpaper(url: URL(fileURLWithPath: "/library/p.png"),
+                      path: "/library/p.png", name: "p.png",
+                      modifiedAt: Date(timeIntervalSince1970: 0),
+                      fileSize: 1, aspectRatio: aspect)
+        }
+        #expect(abs(walleWidestAspect([item(1.5), item(0.75), item(2.4)]) - 2.4) < 1e-9)
+        // A portrait image counts by its long side, so 0.5 is as wide as 2.0.
+        #expect(abs(walleWidestAspect([item(0.5)]) - 2.0) < 1e-9)
+        #expect(walleWidestAspect([item(nil)]) == 1.8)
+    }
+
     @Test func aspectRatioIsNilForCorruptFiles() throws {
         try withTempDirectory { dir in
             let bad = dir.appendingPathComponent("bad.png")

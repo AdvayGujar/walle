@@ -338,6 +338,17 @@ private func walleAspectRatios(for urls: [URL]) -> [Double?] {
     return ratios
 }
 
+/// The widest aspect ratio in the library, with portrait images folded to their long side.
+///
+/// The thumbnail floor is set by the widest image: a 21:9 wallpaper needs a wider source
+/// than a 4:3 one for the same card height. The fallback matches the picker's historical
+/// default for an empty or unreadable library.
+public func walleWidestAspect(_ wallpapers: [Wallpaper]) -> Double {
+    wallpapers.compactMap(\.aspectRatio)
+        .map { max($0, 1.0 / $0) }
+        .max() ?? 1.8
+}
+
 /// Reads only the image properties (never decodes pixels) to obtain width / height.
 /// Returns nil for non-images and corrupt files.
 public func walleImageAspectRatio(at url: URL) -> Double? {

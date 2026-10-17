@@ -1094,7 +1094,12 @@ public struct CLI {
         // everything on first open. That is why keeping thumb_max_px in step by hand was
         // ever necessary, and this is what makes it unnecessary.
         var thumbPixels = config.thumbMaxPx
-        if let answer = capturePicker(["--thumb-size"], environment), let parsed = Int(answer) {
+        // The picker applies the display's geometric floor. Hand it the widest aspect we
+        // already measured, so building the cache does not scan the library a second time.
+        let widestAspect = walleWidestAspect(scan.wallpapers)
+        if let answer = capturePicker(["--thumb-size", "--widest-aspect", String(widestAspect)],
+                                      environment),
+           let parsed = Int(answer) {
             thumbPixels = parsed
         }
         let cache = ThumbnailCache(directory: cacheDir, maxPx: thumbPixels)

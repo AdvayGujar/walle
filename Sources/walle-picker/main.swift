@@ -75,9 +75,7 @@ let setter = NSWorkspaceSetter()
 /// snapshot path has to use the same floor, or it renders blurrier than the real thing and
 /// stops being a useful check.
 func makeProvider(library: [Wallpaper], width: Double, height: Double) -> ThumbnailProvider {
-    let widest = library.compactMap { $0.aspectRatio }
-        .map { max($0, 1.0 / $0) }
-        .max() ?? 1.8
+    let widest = walleWidestAspect(library)
     let geometry = LayoutEngine(config: config,
                                 screen: ScreenMetrics(width: width, height: height),
                                 transition: 0)
@@ -236,10 +234,14 @@ case "--thumb-size":
     let screenHeight = value(of: "--height", in: rest).flatMap(Double.init)
         ?? Double(screen?.frame.height ?? 982)
     let backingScale = Double(screen?.backingScaleFactor ?? 2)
-    let library = loadLibrary()
-    let widest = library.compactMap { $0.aspectRatio }
-        .map { max($0, 1.0 / $0) }
-        .max() ?? 1.8
+    // "walle cache" already scanned the library and passes the widest aspect in, so a
+    // cache build does not make this process walk every image a second time.
+    let widest: Double
+    if let supplied = value(of: "--widest-aspect", in: rest).flatMap(Double.init), supplied > 0 {
+        widest = supplied
+    } else {
+        widest = walleWidestAspect(loadLibrary())
+    }
     let geometry = LayoutEngine(config: config,
                                 screen: ScreenMetrics(width: screenWidth, height: screenHeight),
                                 transition: 0)
