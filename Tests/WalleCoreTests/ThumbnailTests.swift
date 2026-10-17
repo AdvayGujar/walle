@@ -82,6 +82,17 @@ struct ThumbnailTests {
         }
     }
 
+    @Test func cacheNameIsTheStableLowercaseHexOfItsIdentity() {
+        // Locks the digest of path + mtime bit pattern + budget. The hex encoder is a
+        // performance detail; the filename every existing cache already uses is not.
+        let wallpaper = Wallpaper(
+            url: URL(fileURLWithPath: "/tmp/x.jpg"), path: "/tmp/x.jpg", name: "x.jpg",
+            modifiedAt: Date(timeIntervalSince1970: 0), fileSize: 0, aspectRatio: nil)
+        let cache = ThumbnailCache(directory: URL(fileURLWithPath: "/tmp/thumbs"), maxPx: 512)
+        #expect(cache.cacheURL(for: wallpaper).lastPathComponent
+            == "d0e5e3896be023c0fab1efb079130ea0d3de5f4bef06108fa26671c9c2201cbb.jpg")
+    }
+
     @Test func existingThumbnailAppearsOnlyAfterGeneration() throws {
         try withTempDirectory { dir in
             let imageURL = dir.appendingPathComponent("one.png")
