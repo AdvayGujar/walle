@@ -1,6 +1,5 @@
 import AppKit
 import WalleCore
-import WalleKit
 
 /// Owns the interactive picker session.
 ///
