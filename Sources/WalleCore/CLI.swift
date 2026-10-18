@@ -749,10 +749,13 @@ public struct CLI {
         process.standardOutput = outPipe
         process.standardError = errPipe
         try process.run()
-        // Read to EOF before waiting so a chatty child cannot fill a pipe and deadlock.
-        let outData = outPipe.fileHandleForReading.readDataToEndOfFile()
-        let errData = errPipe.fileHandleForReading.readDataToEndOfFile()
+        // Drain both pipes at once. Reading stdout to EOF first deadlocks if the child
+        // fills stderr's 64 KiB buffer before it closes stdout, which a chatty picker
+        // (warnings, WALLE_TRACE) can do; neither pipe would then ever be read.
+        let drained = Self.drainProcessPipes(out: outPipe, err: errPipe)
         process.waitUntilExit()
+        let outData = drained.stdout
+        let errData = drained.stderr
 
         if let text = String(data: outData, encoding: .utf8) {
             for line in text.split(separator: "\n", omittingEmptySubsequences: true) {
@@ -807,6 +810,23 @@ public struct CLI {
         return process.terminationStatus
     }
 
+    /// Reads a child's stdout and stderr at the same time, so neither can fill its pipe
+    /// buffer while the other is read. The calling thread drains stdout; one worker drains
+    /// stderr, and both return only at EOF.
+    static func drainProcessPipes(out: Pipe, err: Pipe) -> (stdout: Data, stderr: Data) {
+        let results = WalleConcurrentResults<Data?>(repeating: nil, count: 2)
+        let errHandle = err.fileHandleForReading
+        let group = DispatchGroup()
+        group.enter()
+        DispatchQueue.global(qos: .userInitiated).async {
+            results.set(errHandle.readDataToEndOfFile(), at: 1)
+            group.leave()
+        }
+        results.set(out.fileHandleForReading.readDataToEndOfFile(), at: 0)
+        group.wait()
+        return (results.values[0] ?? Data(), results.values[1] ?? Data())
+    }
+
     /// Runs the picker and returns its standard output. Used to ask the picker for values
     /// only it can compute, such as the thumbnail size this display needs.
     static func capturePicker(_ arguments: [String],
@@ -854,9 +874,25 @@ public struct CLI {
         reportWarnings(warnings, environment, config: config)
         let mode = try selectionMode(options)
 
-        let library = LibraryScanner(config: config, home: environment.paths.home).scan().wallpapers
-        let history = (try? HistoryStore(fileURL: environment.paths.historyFile).entries()) ?? []
-        let state = StateStore(fileURL: environment.paths.stateFile).load()
+        // Only the inputs the mode actually reads. An explicit path and --last resolve
+        // from disk, so a full library scan (and its ImageIO reads) was pure waste; the
+        // state file only matters for next/previous, which start from the current wallpaper.
+        var library: [Wallpaper] = []
+        var history: [HistoryEntry] = []
+        var currentPath: String?
+        switch mode {
+        case .explicit:
+            break
+        case .last:
+            history = (try? HistoryStore(fileURL: environment.paths.historyFile).entries()) ?? []
+        case .random:
+            library = LibraryScanner(config: config, home: environment.paths.home)
+                .scan(includeAspectRatio: false).wallpapers
+        case .next, .previous:
+            library = LibraryScanner(config: config, home: environment.paths.home)
+                .scan(includeAspectRatio: false).wallpapers
+            currentPath = StateStore(fileURL: environment.paths.stateFile).load().lastAppliedPath
+        }
 
         let chosen: Wallpaper
         do {
@@ -864,7 +900,7 @@ public struct CLI {
                 mode,
                 library: library,
                 history: history,
-                currentPath: state.lastAppliedPath,
+                currentPath: currentPath,
                 seed: UInt64(Date().timeIntervalSince1970 * 1000))
         } catch let error as SelectionError {
             throw CLIError(error.description)

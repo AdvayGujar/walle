@@ -79,6 +79,46 @@ struct HistoryStoreTests {
         }
     }
 
+    @Test func limitReadsTheTailAcrossChunkBoundaries() throws {
+        try withTempDirectory { dir in
+            let store = HistoryStore(fileURL: dir.appendingPathComponent("history.jsonl"))
+            // Long paths make 120 entries span many 16 KiB chunks, so most lines cross a
+            // read boundary at least once.
+            let prefix = "/wall/" + String(repeating: "x", count: 400) + "/"
+            for index in 0..<120 {
+                try store.append(historyEntry(prefix + "\(index).png",
+                                              seconds: TimeInterval(index)))
+            }
+
+            let newest = try store.entries(limit: 3)
+            #expect(newest.map(\.path) == [119, 118, 117].map { prefix + "\($0).png" })
+            #expect(try store.lastAppliedPath() == prefix + "119.png")
+        }
+    }
+
+    @Test func limitLargerThanTheHistoryReturnsAllNewestFirst() throws {
+        try withTempDirectory { dir in
+            let store = HistoryStore(fileURL: dir.appendingPathComponent("history.jsonl"))
+            try store.append(historyEntry("/wall/one.png", seconds: 10))
+            try store.append(historyEntry("/wall/two.png", seconds: 20))
+            #expect(try store.entries(limit: 10).map(\.path) == ["/wall/two.png",
+                                                                 "/wall/one.png"])
+            #expect(try store.entries(limit: 0).isEmpty)
+        }
+    }
+
+    @Test func limitSkipsACorruptFinalLine() throws {
+        try withTempDirectory { dir in
+            let fileURL = dir.appendingPathComponent("history.jsonl")
+            let store = HistoryStore(fileURL: fileURL)
+            let good = historyEntry("/wall/one.png", seconds: 10)
+            try Data((try encodedLine(good) + "\n" + "{\"path\": \"/wall/two").utf8)
+                .write(to: fileURL)
+            #expect(try store.entries(limit: 2).map(\.path) == ["/wall/one.png"])
+            #expect(try store.lastAppliedPath() == "/wall/one.png")
+        }
+    }
+
     @Test func corruptMiddleLineIsSkippedAndGoodEntriesSurvive() throws {
         try withTempDirectory { dir in
             let fileURL = dir.appendingPathComponent("history.jsonl")

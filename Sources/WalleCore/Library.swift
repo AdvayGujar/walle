@@ -274,6 +274,17 @@ private func walleHasFinderInfoSkipFlag(_ url: URL) -> Bool {
 /// Orders wallpapers for the picker.
 public enum LibrarySort {
 
+    /// One random item for a seed, without shuffling the library.
+    ///
+    /// A picker only needs one wallpaper for --random; sorting and copying the whole
+    /// library to take its first element is wasted work, and the same SplitMix64 stream
+    /// keeps the pick reproducible for a seed.
+    public static func randomElement(_ items: [Wallpaper], seed: UInt64) -> Wallpaper? {
+        guard !items.isEmpty else { return nil }
+        var generator = WalleSplitMix64(seed: seed)
+        return items[Int(generator.next() % UInt64(items.count))]
+    }
+
     public static func sort(_ items: [Wallpaper], mode: SortMode, seed: UInt64) -> [Wallpaper] {
         switch mode {
         case .name:

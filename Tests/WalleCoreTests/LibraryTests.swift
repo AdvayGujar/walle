@@ -280,6 +280,20 @@ struct LibraryTests {
         #expect(first == ["alpha.png", "Beta.png", "gamma.png", "zeta.png"])
     }
 
+    @Test func randomElementIsReproducibleAndNeedsNoWholeOrder() throws {
+        let items = (0..<8).map { makeWallpaper(name: String($0) + ".png", modifiedAt: Double($0)) }
+        #expect(LibrarySort.randomElement([], seed: 1) == nil)
+
+        let first = try #require(LibrarySort.randomElement(items, seed: 42))
+        #expect(first == LibrarySort.randomElement(items, seed: 42))
+        #expect(items.contains(first))
+
+        let picks = Set((0..<16).compactMap {
+            LibrarySort.randomElement(items, seed: UInt64($0))?.path
+        })
+        #expect(picks.count > 1)
+    }
+
     @Test func randomSortIsReproduciblePerSeedAndVariesAcrossSeeds() {
         let items = (0..<8).map { makeWallpaper(name: String($0) + ".png", modifiedAt: Double($0)) }
         let first = LibrarySort.sort(items, mode: .random, seed: 42).map(\.path)
