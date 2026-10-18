@@ -21,13 +21,33 @@ public enum SnapshotError: Error, CustomStringConvertible {
 /// The card row.
 ///
 /// All geometry comes from LayoutEngine as a function of a transition value, so the class
-/// owns three things: the layer pool, a single animation clock, and the hit testing.
+/// owns the layer pool and the animation clock; it does no geometry of its own.
 ///
 /// Both kinds of motion run on that one clock. Expanding interpolates the transition;
 /// rotating interpolates each card between the slot it came from and the slot it is going
 /// to, while the card keeps its own wallpaper. That is what makes scrolling the row look
 /// like the cards sliding rather than the pictures being swapped.
 public final class CorridorView: NSView {
+
+    /// Everything that changes how the corridor is rendered but not what it displays.
+    /// Grouped so the initializer stays within a reasonable parameter count.
+    public struct Options {
+        /// 0 = resting row, 1 = expanded preview.
+        public var transition: Double
+        /// Flat per-slot colours instead of wallpapers, for --debug-tiles.
+        public var debugColours: Bool
+        /// Decode every thumbnail before returning. --snapshot renders immediately and
+        /// cannot wait for the provider, so it turns this on.
+        public var synchronousThumbnails: Bool
+
+        public init(transition: Double = 1,
+                    debugColours: Bool = false,
+                    synchronousThumbnails: Bool = false) {
+            self.transition = transition
+            self.debugColours = debugColours
+            self.synchronousThumbnails = synchronousThumbnails
+        }
+    }
 
     /// A card handed to a @Sendable provider completion. The provider delivers on the
     /// main queue, so the body runs under `MainActor.assumeIsolated`.
@@ -36,11 +56,21 @@ public final class CorridorView: NSView {
         init(_ card: CardLayer) { self.card = card }
     }
 
-    private let synchronousThumbnails: Bool
-    private var config: Config
+    /// Where every card came from and where it is heading, for the duration of one
+    /// rotation. Arrays rather than dictionaries: the slots are 0..<count, and this is
+    /// indexed once per card per animation tick.
+    private struct Rotation {
+        let from: [SlotGeometry]
+        let to: [SlotGeometry]
+        let contents: [Wallpaper]
+    }
+
+    private let config: Config
+    private let provider: ThumbnailProvider
+    private let options: Options
+    /// Parsed once: the border colour cannot change for the lifetime of this view.
+    private let accent: CGColor
     private var screenMetrics: ScreenMetrics
-    private var provider: ThumbnailProvider
-    private var currentPath: String?
 
     private var library: [Wallpaper] = []
     private var focus: Int = 0
@@ -48,42 +78,33 @@ public final class CorridorView: NSView {
 
     private var cards: [CardLayer] = []
     private let backdrop = CALayer()
-    private let debugColours: Bool
     private var lastCardCount = 0
 
-    /// Geometry currently on screen, reused for hit testing.
+    /// Slots currently on screen, so a rotation knows each card's starting geometry.
     private var currentSlots: [SlotGeometry] = []
 
     // One clock drives everything.
-    private var animationTimer: Timer?
+    private var animationLink: CADisplayLink?
     private var animationStart: CFTimeInterval = 0
     private var animationDurationMs: Double = 0
     private var easedProgress: Double = 1
     private var fromTransition: Double = 1
     private var toTransition: Double = 1
 
-    // Rotation state: where each card came from and where it is heading.
-    private var rotationFrom: [Int: SlotGeometry] = [:]
-    private var rotationTo: [Int: SlotGeometry] = [:]
-    private var rotationContents: [Int: Wallpaper] = [:]
+    private var rotation: Rotation?
 
     public var onApply: ((Wallpaper) -> Void)?
     public var onDismiss: (() -> Void)?
 
-    /// `synchronousThumbnails` is for --snapshot, which renders the layer tree immediately
-    /// and therefore needs every image decoded before it returns. The interactive picker
-    /// leaves it false and fills cards as the provider delivers them.
     public init(frame: NSRect, config: Config, provider: ThumbnailProvider,
-                currentPath: String?, transition: Double = 1,
-                debugColours: Bool = false, synchronousThumbnails: Bool = false) {
+                options: Options = Options()) {
         self.config = config
+        self.provider = provider
+        self.options = options
+        self.transition = min(1, max(0, options.transition))
+        self.accent = CorridorView.color(fromHex: config.cardBorderColor)
         self.screenMetrics = ScreenMetrics(width: Double(frame.width),
                                            height: Double(frame.height))
-        self.provider = provider
-        self.currentPath = currentPath
-        self.transition = min(1, max(0, transition))
-        self.debugColours = debugColours
-        self.synchronousThumbnails = synchronousThumbnails
         super.init(frame: frame)
         wantsLayer = true
         backdrop.backgroundColor = NSColor.black
@@ -110,53 +131,63 @@ public final class CorridorView: NSView {
     // MARK: - animation clock
 
     private func cancelAnimation() {
-        animationTimer?.invalidate()
-        animationTimer = nil
+        animationLink?.invalidate()
+        animationLink = nil
         animationDurationMs = 0
         easedProgress = 1
-        rotationFrom = [:]
-        rotationTo = [:]
-        rotationContents = [:]
+        rotation = nil
     }
 
     private func startAnimation(durationMs: Double) {
-        animationTimer?.invalidate()
+        animationLink?.invalidate()
+        animationLink = nil
         animationDurationMs = max(1, durationMs)
         animationStart = CACurrentMediaTime()
         easedProgress = 0
-        // The timer runs in .common so it keeps ticking while the pointer is being tracked.
-        let timer = Timer(timeInterval: 1.0 / 60.0, repeats: true) { [weak self] timer in
-            guard let self else { timer.invalidate(); return }
-            let elapsedMs = (CACurrentMediaTime() - self.animationStart) * 1000
-            let linear = min(1, elapsedMs / self.animationDurationMs)
-            // ease-out cubic
-            self.easedProgress = 1 - pow(1 - linear, 3)
-            self.transition = self.fromTransition
-                + (self.toTransition - self.fromTransition) * self.easedProgress
-            self.rebuildCards()
-            if linear >= 1 {
-                timer.invalidate()
-                self.animationTimer = nil
-                self.easedProgress = 1
-                self.rotationFrom = [:]
-                self.rotationTo = [:]
-                self.rotationContents = [:]
-                self.rebuildCards()
-            }
+        // The interactive picker only animates once its window is on screen, which is what
+        // a display link needs: it fires in step with that display instead of a fixed
+        // 60 Hz. Without a display the final frame is applied immediately, so a caller
+        // that animates a detached view still ends in the right state.
+        guard window != nil else {
+            finishAnimation()
+            return
         }
-        RunLoop.main.add(timer, forMode: .common)
-        animationTimer = timer
+        let link = displayLink(target: self, selector: #selector(displayLinkFired(_:)))
+        link.add(to: .main, forMode: .common)
+        animationLink = link
+    }
+
+    @objc private func displayLinkFired(_ link: CADisplayLink) {
+        let elapsedMs = (link.timestamp - animationStart) * 1000
+        let linear = min(1, elapsedMs / animationDurationMs)
+        guard linear < 1 else {
+            finishAnimation()
+            return
+        }
+        // ease-out cubic
+        easedProgress = 1 - pow(1 - linear, 3)
+        transition = fromTransition + (toTransition - fromTransition) * easedProgress
+        rebuildCards()
+    }
+
+    /// Applies the final frame once and drops the rotation so the next rebuild draws the
+    /// resting geometry. Doing this in the tick that finishes avoids rebuilding twice.
+    private func finishAnimation() {
+        animationLink?.invalidate()
+        animationLink = nil
+        easedProgress = 1
+        transition = toTransition
+        rotation = nil
+        rebuildCards()
     }
 
     /// Moves between the resting row and the expanded preview.
     public func setTransition(_ target: Double, animated: Bool) {
         let target = min(1, max(0, target))
         let needsMove = abs(target - transition) > 0.0001
-        animationTimer?.invalidate()
-        animationTimer = nil
-        rotationFrom = [:]
-        rotationTo = [:]
-        rotationContents = [:]
+        animationLink?.invalidate()
+        animationLink = nil
+        rotation = nil
 
         guard animated, config.animationMs > 0, needsMove else {
             easedProgress = 1
@@ -187,31 +218,29 @@ public final class CorridorView: NSView {
             return
         }
 
-        var from: [Int: SlotGeometry] = [:]
-        var to: [Int: SlotGeometry] = [:]
-        var contents: [Int: Wallpaper] = [:]
+        var from: [SlotGeometry] = []
+        var contents: [Wallpaper] = []
+        from.reserveCapacity(count)
+        contents.reserveCapacity(count)
         for destination in 0..<count {
-            to[destination] = newSlots[destination]
             if let source = Carousel.sourceSlot(destination: destination, delta: delta,
                                                 slotCount: count) {
                 // The card that was at source slides into this destination, keeping its own
                 // wallpaper. Getting this direction wrong is what made the row slide the
                 // wrong way and then snap when the animation ended.
-                from[destination] = oldSlots[source]
-                contents[destination] = oldContents[source]
+                from.append(oldSlots[source])
+                contents.append(oldContents[source])
             } else {
                 // A card entering from off the end of the row.
                 var ghost = newSlots[destination]
                 let push = engine.pitch * Carousel.entryDirection(delta: delta)
                 ghost.rect = ghost.rect.offsetBy(dx: CGFloat(push), dy: 0)
-                from[destination] = ghost
-                contents[destination] = library[newSlots[destination].index]
+                from.append(ghost)
+                contents.append(library[newSlots[destination].index])
             }
         }
 
-        rotationFrom = from
-        rotationTo = to
-        rotationContents = contents
+        rotation = Rotation(from: from, to: newSlots, contents: contents)
         fromTransition = transition
         toTransition = transition
 
@@ -232,17 +261,12 @@ public final class CorridorView: NSView {
 
     /// Space toggles the preview on the centred card. It is a toggle rather than expand-only
     /// so the row can be returned to its resting state without dismissing the picker.
+    ///
+    /// Keys are handled by the application-level monitor in PickerApp, not here: that is
+    /// what makes them work regardless of which view is first responder, and it keeps the
+    /// Space binding in one place.
     public func toggleExpanded() {
         setTransition(transition > 0 ? 0 : 1, animated: true)
-    }
-
-    public override func keyDown(with event: NSEvent) {
-        switch event.keyCode {
-        case 123, 126: rotate(-1)
-        case 124, 125: rotate(1)
-        case 36, 49: applyFocused()
-        default: super.keyDown(with: event)
-        }
     }
 
     // MARK: - layout
@@ -305,69 +329,106 @@ public final class CorridorView: NSView {
         }
     }
 
+    /// Rebinds every card to this frame. One disabled-actions transaction covers the whole
+    /// loop: starting one per card meant five Core Animation commits per animation tick.
     private func rebuildCards() {
-        let engine = LayoutEngine(config: config, screen: screenMetrics, transition: transition)
-        let slots = engine.slots(count: library.count, focus: focus)
+        let slots = layoutSlots()
         currentSlots = slots
+        ensureCardCount(slots.count)
 
-        while cards.count < slots.count {
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        apply(slots)
+        CATransaction.commit()
+
+        updatePaintOrder(for: slots)
+    }
+
+    private func layoutSlots() -> [SlotGeometry] {
+        LayoutEngine(config: config, screen: screenMetrics, transition: transition)
+            .slots(count: library.count, focus: focus)
+    }
+
+    private func ensureCardCount(_ count: Int) {
+        while cards.count < count {
             let card = CardLayer()
             layer?.addSublayer(card)
             cards.append(card)
         }
+    }
 
-        let accent = CorridorView.color(fromHex: config.cardBorderColor)
+    private func apply(_ slots: [SlotGeometry]) {
         let backingScale = window?.backingScaleFactor ?? 2.0
-        let morphing = easedProgress < 1
+        // Rotation state only exists while a rotation runs. setTransition clears it, so an
+        // expand morph never takes the interpolate branch below; rotate() sets
+        // fromTransition == toTransition, so only easedProgress moves the cards.
+        let morphing = rotation != nil && easedProgress < 1
 
         for (index, slot) in slots.enumerated() {
             let card = cards[index]
-            var geometry = slot
-            if morphing, let from = rotationFrom[index], let to = rotationTo[index] {
-                geometry = LayoutEngine.interpolate(from, to, easedProgress)
-            }
-            // A card keeps its own wallpaper while it slides, so take the content from the
-            // rotation map rather than from whatever slot it currently occupies.
-            let wallpaper = morphing ? (rotationContents[index] ?? library[slot.index])
-                                     : library[slot.index]
+            let geometry = geometry(for: slot, at: index, morphing: morphing)
+            let wallpaper = wallpaper(for: slot, at: index, morphing: morphing)
             // One thumbnail size for every card, because the cards are tall and a wide
             // wallpaper aspect-fills them. The collapsed centre card alone renders at
             // about 1512 px on the long side on a 1512-wide Retina display, so a smaller
             // thumbnail made everything visibly soft. The single size also means the image
             // never changes as a card slides into the centre, so there is no decode stall
             // and nothing to preload.
-            if !debugColours, card.wallpaper?.path != wallpaper.path {
-                if synchronousThumbnails {
+            if !options.debugColours, card.wallpaper?.path != wallpaper.path {
+                if options.synchronousThumbnails {
                     card.setWallpaper(wallpaper, contents: provider.image(for: wallpaper))
                 } else {
                     loadThumbnail(wallpaper, into: card)
                 }
             }
-            if debugColours {
+            if options.debugColours {
                 card.setContents(CorridorView.solidImage(forSlot: index))
             }
             card.apply(geometry, accent: accent, backingScale: backingScale)
-            card.isHidden = false
+            if card.isHidden { card.isHidden = false }
         }
 
-        for index in slots.count..<cards.count {
+        for index in slots.count..<cards.count where !cards[index].isHidden {
             cards[index].isHidden = true
         }
+    }
 
-        // Paint order. The on-screen compositor sorts by zPosition but CALayer.render(in:)
-        // paints in sublayer order, so the order is made explicit. This is only redone when
-        // the number of cards changes: re-adding sublayers every frame meant restructuring
-        // the layer tree 60 times a second, which is what made the animation stutter.
-        if cards.count != lastCardCount {
-            lastCardCount = cards.count
-            let paintOrder = slots.indices
-                .map { index -> (card: CardLayer, depth: Double) in
-                    (cards[index], slots[index].zPosition)
-                }
-                .sorted { $0.depth < $1.depth }
-            for entry in paintOrder {
-                layer?.addSublayer(entry.card)
+    /// The card's own geometry for this frame: its slot, or its position between two slots
+    /// while a rotation is running.
+    private func geometry(for slot: SlotGeometry, at index: Int,
+                          morphing: Bool) -> SlotGeometry {
+        guard morphing, let rotation,
+              rotation.from.indices.contains(index),
+              rotation.to.indices.contains(index) else {
+            return slot
+        }
+        return LayoutEngine.interpolate(rotation.from[index], rotation.to[index], easedProgress)
+    }
+
+    /// A card keeps its own wallpaper while it slides, so during a rotation the content
+    /// comes from the rotation, not from whatever slot the card currently occupies.
+    private func wallpaper(for slot: SlotGeometry, at index: Int,
+                           morphing: Bool) -> Wallpaper {
+        if morphing, let rotation, rotation.contents.indices.contains(index) {
+            return rotation.contents[index]
+        }
+        return library[slot.index]
+    }
+
+    /// Paint order. The on-screen compositor sorts by zPosition but CALayer.render(in:)
+    /// paints in sublayer order, so the order is made explicit. This is only redone when
+    /// the number of cards changes: re-adding sublayers every frame meant restructuring
+    /// the layer tree 60 times a second, which is what made the animation stutter.
+    private func updatePaintOrder(for slots: [SlotGeometry]) {
+        guard cards.count != lastCardCount else { return }
+        lastCardCount = cards.count
+        let paintOrder = slots.indices
+            .map { index -> (card: CardLayer, depth: Double) in
+                (cards[index], slots[index].zPosition)
             }
+            .sorted { $0.depth < $1.depth }
+        for entry in paintOrder {
+            layer?.addSublayer(entry.card)
         }
     }
 

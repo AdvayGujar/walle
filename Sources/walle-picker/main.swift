@@ -183,10 +183,9 @@ case "--snapshot":
                             config: config,
                             provider: makeProvider(library: library,
                                                    width: width, height: height),
-                            currentPath: current,
-                            transition: transition,
-                            debugColours: debugColours,
-                            synchronousThumbnails: true)
+                            options: CorridorView.Options(transition: transition,
+                                                          debugColours: debugColours,
+                                                          synchronousThumbnails: true))
     view.reload(library: library, focus: focusIndex(in: library, currentPath: current))
     do {
         try view.snapshot(to: url)
@@ -303,13 +302,12 @@ case "--pick":
         exit(2)
     }
     let current = setter.currentWallpaperURL()?.path
-    // Opens resting, then the morph to the preview is driven by pointer entry, which is
-    // the transition the design calls for. Per-card hover and the anti-spin guards are M5b.
+    // Opens resting (or expanded when expand_on_enter is off); the arrows rotate the row and
+    // Space toggles the preview.
     PickerApp.run(config: config,
                   paths: paths,
                   library: library,
                   focusIndex: focusIndex(in: library, currentPath: current),
-                  currentPath: current,
                   startsExpanded: !config.expandOnEnter,
                   runForMs: value(of: "--run-for", in: rest).flatMap(Int.init) ?? 0,
                   launchedAt: launchedAt)

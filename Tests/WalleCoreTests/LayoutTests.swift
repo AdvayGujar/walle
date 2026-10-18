@@ -239,6 +239,43 @@ struct LayoutTests {
         #expect(!LayoutEngine.contains(CGPoint(x: midX, y: minY - 1), in: tile))
         #expect(!LayoutEngine.contains(CGPoint(x: midX, y: minY + height + 1), in: tile))
     }
+
+    // MARK: - Shape stability
+
+    @Test func aMovingNeighbourKeepsItsShape() {
+        let engine = makeLayoutEngine(screen: ScreenMetrics(width: 1920, height: 1080))
+        let resting = engine.slots(count: 5, focus: 0).first { $0.offset == 1 }!
+        let morphing = LayoutEngine(config: engine.config, screen: engine.screen, transition: 0.5)
+            .slots(count: 5, focus: 0).first { $0.offset == 1 }!
+
+        // The neighbour slides outward and fades during the morph, but its silhouette is
+        // the same, so the renderer must not rebuild its path.
+        #expect(resting.rect.midX != morphing.rect.midX)
+        #expect(resting.alpha != morphing.alpha)
+        #expect(resting.hasSameShape(as: morphing))
+    }
+
+    @Test func everyShapeInputBreaksShapeEquality() {
+        let slot = makeLayoutEngine().slots(count: 5, focus: 0).first { $0.isCenter }!
+        var width = slot
+        width.width += 1
+        var height = slot
+        height.height += 1
+        var skew = slot
+        skew.skew += 1
+        var cornerRadius = slot
+        cornerRadius.cornerRadius += 1
+
+        for changed in [width, height, skew, cornerRadius] {
+            #expect(!slot.hasSameShape(as: changed))
+        }
+        // Position, alpha and stacking order are deliberately not part of the silhouette.
+        var moved = slot
+        moved.rect = moved.rect.offsetBy(dx: 10, dy: 10)
+        moved.alpha = 0.1
+        moved.zPosition += 1
+        #expect(slot.hasSameShape(as: moved))
+    }
 }
 
 private func approx(_ lhs: Double, _ rhs: Double, tolerance: Double = 1e-9) -> Bool {
