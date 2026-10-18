@@ -212,6 +212,8 @@ public enum SelectionError: Error, Equatable, CustomStringConvertible {
 }
 
 /// Pure selection logic over a scanned library and the recorded history.
+///
+/// `history` is expected newest-first, which is what `HistoryStore.entries()` returns.
 public enum Selection {
 
     public static func resolve(_ mode: SelectionMode,
@@ -267,18 +269,13 @@ public enum Selection {
         return library.firstIndex { walleStandardizedPath($0.path) == target }
     }
 
-    /// The most recent entry whose file still exists. Scanning in order and keeping
-    /// the maximum appliedAt makes this robust to either ordering; ties keep the
-    /// first entry seen.
+    /// The most recent entry whose file still exists.
+    ///
+    /// Because `history` is newest-first, the first entry that exists is the answer. The
+    /// previous version statted every entry to stay order-agnostic, so `--last` paid one
+    /// syscall per history line even though the newest wallpaper almost always survives.
     private static func newestExisting(_ history: [HistoryEntry]) -> HistoryEntry? {
-        var best: HistoryEntry?
-        for entry in history {
-            guard FileManager.default.fileExists(atPath: entry.path) else { continue }
-            if best == nil || entry.appliedAt > best!.appliedAt {
-                best = entry
-            }
-        }
-        return best
+        history.first { FileManager.default.fileExists(atPath: $0.path) }
     }
 
     private static func wallpaper(for path: String, library: [Wallpaper]) -> Wallpaper {
