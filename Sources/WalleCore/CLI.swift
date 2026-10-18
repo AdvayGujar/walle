@@ -854,9 +854,25 @@ public struct CLI {
         reportWarnings(warnings, environment, config: config)
         let mode = try selectionMode(options)
 
-        let library = LibraryScanner(config: config, home: environment.paths.home).scan().wallpapers
-        let history = (try? HistoryStore(fileURL: environment.paths.historyFile).entries()) ?? []
-        let state = StateStore(fileURL: environment.paths.stateFile).load()
+        // Only the inputs the mode actually reads. An explicit path and --last resolve
+        // from disk, so a full library scan (and its ImageIO reads) was pure waste; the
+        // state file only matters for next/previous, which start from the current wallpaper.
+        var library: [Wallpaper] = []
+        var history: [HistoryEntry] = []
+        var currentPath: String?
+        switch mode {
+        case .explicit:
+            break
+        case .last:
+            history = (try? HistoryStore(fileURL: environment.paths.historyFile).entries()) ?? []
+        case .random:
+            library = LibraryScanner(config: config, home: environment.paths.home)
+                .scan(includeAspectRatio: false).wallpapers
+        case .next, .previous:
+            library = LibraryScanner(config: config, home: environment.paths.home)
+                .scan(includeAspectRatio: false).wallpapers
+            currentPath = StateStore(fileURL: environment.paths.stateFile).load().lastAppliedPath
+        }
 
         let chosen: Wallpaper
         do {
@@ -864,7 +880,7 @@ public struct CLI {
                 mode,
                 library: library,
                 history: history,
-                currentPath: state.lastAppliedPath,
+                currentPath: currentPath,
                 seed: UInt64(Date().timeIntervalSince1970 * 1000))
         } catch let error as SelectionError {
             throw CLIError(error.description)

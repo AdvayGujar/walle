@@ -239,18 +239,18 @@ public enum Selection {
         return makeWallpaper(at: target)
     }
 
+    /// A chosen wallpaper is used for its path only: the picker scans the library itself
+    /// and records the result, and --dry-run prints the path. Reading metadata here cost
+    /// a stat plus an ImageIO open per explicit/--last selection for values nobody read.
     private static func makeWallpaper(at path: String) -> Wallpaper {
         let url = URL(fileURLWithPath: path)
-        let attributes = try? FileManager.default.attributesOfItem(atPath: path)
-        let modifiedAt = (attributes?[.modificationDate] as? Date) ?? Date(timeIntervalSince1970: 0)
-        let fileSize = (attributes?[.size] as? NSNumber)?.intValue ?? 0
         return Wallpaper(
             url: url,
             path: path,
             name: url.lastPathComponent,
-            modifiedAt: modifiedAt,
-            fileSize: fileSize,
-            aspectRatio: walleImageAspectRatio(at: url))
+            modifiedAt: Date(timeIntervalSince1970: 0),
+            fileSize: 0,
+            aspectRatio: nil)
     }
 }
 
