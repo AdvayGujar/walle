@@ -1,6 +1,5 @@
 import CoreGraphics
 import Foundation
-import ImageIO
 
 /// Bridges the on-disk `ThumbnailCache` to decoded, in-memory `CGImage`s.
 ///
@@ -181,17 +180,11 @@ public final class ThumbnailProvider: @unchecked Sendable {
         cache.cacheURL(for: wallpaper).path
     }
 
-    /// Produces the on-disk thumbnail through the cache, then decodes that JPEG.
-    /// A missing source, a corrupt file, or a generation failure all collapse to nil.
+    /// Produces the thumbnail through the cache. A missing source, a corrupt file, or a
+    /// generation failure all collapse to nil. A generated image is handed back directly,
+    /// so the cache file is not decoded a second time just to display it.
     private func decode(for wallpaper: Wallpaper) -> CGImage? {
-        guard let url = try? cache.thumbnail(for: wallpaper) else {
-            return nil
-        }
-        guard let source = CGImageSourceCreateWithURL(url as CFURL, nil) else {
-            return nil
-        }
-        let options: [CFString: Any] = [kCGImageSourceShouldCacheImmediately: true]
-        return CGImageSourceCreateImageAtIndex(source, 0, options as CFDictionary)
+        try? cache.thumbnailImage(for: wallpaper)
     }
 
     /// Publishes the result: caches it, wakes synchronous waiters and dispatches

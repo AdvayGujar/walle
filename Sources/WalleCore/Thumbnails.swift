@@ -10,6 +10,7 @@ import UniformTypeIdentifiers
 public enum ThumbnailError: Error, Equatable, Sendable {
     case sourceUnreadable(URL)
     case thumbnailCreationFailed(URL)
+    case cachedThumbnailUnreadable(URL)
     case destinationCreationFailed(URL)
     case writeFailed(URL)
 }
@@ -78,7 +79,31 @@ public struct ThumbnailCache: Sendable {
         if let existing = existingThumbnail(for: wallpaper) {
             return existing
         }
+        let image = try generateImage(for: wallpaper)
+        return try write(image, for: wallpaper)
+    }
 
+    /// The decoded thumbnail, generating and writing the cache file when missing.
+    ///
+    /// Returning the freshly generated image avoids encoding a JPEG and immediately
+    /// decoding that same file again just to put it on screen; on a cold cache that was
+    /// one wasted decode per new card.
+    public func thumbnailImage(for wallpaper: Wallpaper) throws -> CGImage {
+        if let existing = existingThumbnail(for: wallpaper) {
+            guard let source = CGImageSourceCreateWithURL(existing as CFURL, nil),
+                  let image = CGImageSourceCreateImageAtIndex(
+                    source, 0,
+                    [kCGImageSourceShouldCacheImmediately: true] as CFDictionary) else {
+                throw ThumbnailError.cachedThumbnailUnreadable(existing)
+            }
+            return image
+        }
+        let image = try generateImage(for: wallpaper)
+        _ = try write(image, for: wallpaper)
+        return image
+    }
+
+    private func generateImage(for wallpaper: Wallpaper) throws -> CGImage {
         guard let source = CGImageSourceCreateWithURL(wallpaper.url as CFURL, nil) else {
             throw ThumbnailError.sourceUnreadable(wallpaper.url)
         }
@@ -91,7 +116,11 @@ public struct ThumbnailCache: Sendable {
         guard let image = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary) else {
             throw ThumbnailError.thumbnailCreationFailed(wallpaper.url)
         }
+        return image
+    }
 
+    @discardableResult
+    private func write(_ image: CGImage, for wallpaper: Wallpaper) throws -> URL {
         try fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
         let destinationURL = cacheURL(for: wallpaper)
         guard let destination = CGImageDestinationCreateWithURL(
