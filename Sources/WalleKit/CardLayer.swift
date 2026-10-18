@@ -15,6 +15,8 @@ final class CardLayer: CALayer {
     private let imageLayer = CALayer()
     private let maskLayer = CAShapeLayer()
     private let borderLayer = CAShapeLayer()
+    /// The slot last applied, used to tell whether the silhouette actually changed.
+    private var lastShape: SlotGeometry?
 
     override init() {
         super.init()
@@ -45,30 +47,39 @@ final class CardLayer: CALayer {
 
     /// Places and shapes the card. The layer frame is the shape bounding box; the skew
     /// lives entirely in the path, so nothing about the image is distorted.
+    ///
+    /// The caller owns the Core Animation transaction for a whole frame, so this method
+    /// only assigns properties and skips the ones that did not change. Re-assigning an
+    /// identical path still makes the render server rebuild the mask and border, which is
+    /// the expensive part; during a rotation the cards move without changing shape.
     func apply(_ slot: SlotGeometry, accent: CGColor, backingScale: CGFloat) {
-        CATransaction.begin()
-        CATransaction.setDisableActions(true)
+        let size = slot.rect.size
+        if bounds.size != size {
+            bounds = CGRect(origin: .zero, size: size)
+            imageLayer.frame = bounds
+            maskLayer.frame = bounds
+            borderLayer.frame = bounds
+        }
+        let position = CGPoint(x: slot.rect.midX, y: slot.rect.midY)
+        if self.position != position { self.position = position }
 
-        bounds = CGRect(origin: .zero, size: slot.rect.size)
-        position = CGPoint(x: slot.rect.midX, y: slot.rect.midY)
+        if lastShape?.hasSameShape(as: slot) != true {
+            var local = slot
+            local.rect = CGRect(origin: .zero, size: size)
+            let path = CardPath.path(for: local)
+            maskLayer.path = path
+            borderLayer.path = path
+            lastShape = slot
+        }
 
-        var local = slot
-        local.rect = CGRect(origin: .zero, size: slot.rect.size)
-        let path = CardPath.path(for: local)
-
-        imageLayer.frame = bounds
-        imageLayer.contentsScale = backingScale
-        maskLayer.frame = bounds
-        maskLayer.path = path
-
-        borderLayer.frame = bounds
-        borderLayer.path = path
-        borderLayer.lineWidth = slot.isCenter ? slot.borderWidth : 0
-        borderLayer.strokeColor = accent
-
-        opacity = Float(slot.alpha)
-        zPosition = slot.zPosition
-
-        CATransaction.commit()
+        if imageLayer.contentsScale != backingScale {
+            imageLayer.contentsScale = backingScale
+        }
+        if borderLayer.strokeColor != accent { borderLayer.strokeColor = accent }
+        let lineWidth: CGFloat = slot.isCenter ? CGFloat(slot.borderWidth) : 0
+        if borderLayer.lineWidth != lineWidth { borderLayer.lineWidth = lineWidth }
+        let alpha = Float(slot.alpha)
+        if opacity != alpha { opacity = alpha }
+        if zPosition != slot.zPosition { zPosition = slot.zPosition }
     }
 }

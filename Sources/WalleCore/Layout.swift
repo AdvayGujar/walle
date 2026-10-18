@@ -24,6 +24,21 @@ public struct SlotGeometry: Sendable, Equatable {
     public var borderWidth: Double
 }
 
+extension SlotGeometry {
+    /// True when both slots produce the same card silhouette.
+    ///
+    /// Only the mid-section width, height, skew and corner radius feed `CardPath`. A card
+    /// can move, fade and restack without its shape changing, and re-assigning an unchanged
+    /// path still invalidates the mask and border in the render server. The renderer uses
+    /// this to leave those layers untouched during a rotation.
+    public func hasSameShape(as other: SlotGeometry) -> Bool {
+        width == other.width
+            && height == other.height
+            && skew == other.skew
+            && cornerRadius == other.cornerRadius
+    }
+}
+
 public struct ScreenMetrics: Sendable, Equatable {
     public var width: Double
     public var height: Double

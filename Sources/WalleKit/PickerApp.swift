@@ -1,10 +1,8 @@
 import AppKit
 import WalleCore
 
-/// Owns the interactive picker session.
-///
-/// M4 renders the corridor and lets Escape dismiss it. Hover, the keyboard and
-/// apply-on-click arrive in M5.
+/// Owns the interactive picker session: the window, the single keyboard handler, and the
+/// apply/dismiss exits. Rendering and animation live in CorridorView.
 @MainActor
 public final class PickerController: NSObject, NSApplicationDelegate {
 
@@ -12,7 +10,6 @@ public final class PickerController: NSObject, NSApplicationDelegate {
     private let paths: WallePaths
     private let library: [Wallpaper]
     private let focusIndex: Int
-    private let currentPath: String?
     private let startsExpanded: Bool
     private let runForMs: Int
     private let launchedAt: Date
@@ -22,13 +19,12 @@ public final class PickerController: NSObject, NSApplicationDelegate {
     private var keyMonitor: Any?
 
     public init(config: Config, paths: WallePaths, library: [Wallpaper],
-                focusIndex: Int, currentPath: String?, startsExpanded: Bool,
+                focusIndex: Int, startsExpanded: Bool,
                 runForMs: Int = 0, launchedAt: Date = Date()) {
         self.config = config
         self.paths = paths
         self.library = library
         self.focusIndex = focusIndex
-        self.currentPath = currentPath
         self.startsExpanded = startsExpanded
         self.runForMs = runForMs
         self.launchedAt = launchedAt
@@ -75,8 +71,8 @@ public final class PickerController: NSObject, NSApplicationDelegate {
 
         let contentFrame = CGRect(origin: .zero, size: screen.frame.size)
         let view = CorridorView(frame: contentFrame, config: config, provider: provider,
-                                currentPath: currentPath,
-                                transition: startsExpanded ? 1 : 0)
+                                options: CorridorView.Options(
+                                    transition: startsExpanded ? 1 : 0))
         view.reload(library: library, focus: focusIndex)
 
         let setter = NSWorkspaceSetter()
@@ -131,8 +127,9 @@ public final class PickerController: NSObject, NSApplicationDelegate {
             Timer.scheduledTimer(withTimeInterval: delay, repeats: false) { _ in exit(0) }
         }
 
-        // Keyboard only. Handling keys here rather than on the view means they work no
-        // matter which view happens to be first responder. Returning nil consumes the event.
+        // Keyboard only, and handled in exactly one place: the corridor is deliberately
+        // mouse-free, and an application-level monitor works no matter which view happens
+        // to be first responder. Returning nil consumes the event.
         keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [view] event in
             switch event.keyCode {
             case 53:                                    // escape        - dismiss
@@ -169,12 +166,11 @@ public enum PickerApp {
     /// Runs the picker to completion and exits the process.
     @MainActor
     public static func run(config: Config, paths: WallePaths, library: [Wallpaper],
-                           focusIndex: Int, currentPath: String?,
-                           startsExpanded: Bool, runForMs: Int = 0,
+                           focusIndex: Int, startsExpanded: Bool, runForMs: Int = 0,
                            launchedAt: Date = Date()) -> Never {
         let application = NSApplication.shared
         let controller = PickerController(config: config, paths: paths, library: library,
-                                          focusIndex: focusIndex, currentPath: currentPath,
+                                          focusIndex: focusIndex,
                                           startsExpanded: startsExpanded,
                                           runForMs: runForMs, launchedAt: launchedAt)
         application.delegate = controller
