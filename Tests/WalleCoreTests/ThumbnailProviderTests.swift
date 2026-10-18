@@ -350,38 +350,6 @@ struct ThumbnailProviderTests {
         }
     }
 
-    // MARK: - Preload
-
-    @Test func preloadWarmsTheMemoryCache() throws {
-        try withTempDirectory { dir in
-            var names: [String] = []
-            for index in 0..<3 {
-                let name = "preload\(index).png"
-                try writeImage(at: dir.appendingPathComponent(name), width: 120, height: 90)
-                names.append(name)
-            }
-            let wallpapers = names.compactMap { name in
-                scanWallpapers(in: dir).first { $0.name == name }
-            }
-            #expect(wallpapers.count == 3)
-            let (provider, cache) = makeProvider(dir: dir, maxPx: 64)
-
-            provider.preload(wallpapers)
-            #expect(provider.memoryCacheCount() == 3)
-            for wallpaper in wallpapers {
-                #expect(cache.existingThumbnail(for: wallpaper) != nil)
-            }
-        }
-    }
-
-    @Test func preloadWithEmptyArrayDoesNothing() throws {
-        withTempDirectory { dir in
-            let (provider, _) = makeProvider(dir: dir, maxPx: 64)
-            provider.preload([])
-            #expect(provider.memoryCacheCount() == 0)
-        }
-    }
-
     // MARK: - Bounded memory cache
 
     @Test func memoryCacheStaysBoundedUnderManyDistinctImages() throws {

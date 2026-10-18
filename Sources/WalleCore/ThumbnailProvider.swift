@@ -3,11 +3,12 @@ import Foundation
 
 /// Bridges the on-disk `ThumbnailCache` to decoded, in-memory `CGImage`s.
 ///
-/// The picker asks for a thumbnail on the main thread while missing thumbnails are
-/// generated in the background. Decoding the same image twice wastes disk and CPU, so
-/// this type keeps a bounded `NSCache` of decoded images and coalesces concurrent
-/// requests for the same thumbnail behind a lock-protected in-flight map. Every caller
-/// that joins an in-flight request receives that request's result.
+/// The picker paints a cache hit synchronously and asks for a miss asynchronously; the
+/// decode runs off the main thread and the completion lands on the main queue. Decoding
+/// the same image twice wastes disk and CPU, so this type keeps a bounded `NSCache` of
+/// decoded images and coalesces concurrent requests for the same thumbnail behind a
+/// lock-protected in-flight map. Every caller that joins an in-flight request receives
+/// that request's result.
 public final class ThumbnailProvider: @unchecked Sendable {
 
     /// One generation in progress. Waiters park on `condition` until the image is
@@ -153,13 +154,6 @@ public final class ThumbnailProvider: @unchecked Sendable {
             }
             let decoded = self.decode(for: wallpaper)
             _ = self.finish(entry: entry, key: key, image: decoded)
-        }
-    }
-
-    /// Generates and caches the thumbnail for every wallpaper. Empty input is a no-op.
-    public func preload(_ wallpapers: [Wallpaper]) {
-        for wallpaper in wallpapers {
-            _ = image(for: wallpaper)
         }
     }
 

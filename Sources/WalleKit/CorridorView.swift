@@ -97,8 +97,6 @@ public final class CorridorView: NSView {
     public override var isFlipped: Bool { false }
     public override var acceptsFirstResponder: Bool { true }
 
-    public var currentTransition: Double { transition }
-
     public func reload(library: [Wallpaper], focus: Int) {
         self.library = library
         self.focus = library.isEmpty ? 0 : Queue.wrapIndex(focus, count: library.count)
