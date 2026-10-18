@@ -932,9 +932,9 @@ public struct CLI {
 
     // MARK: - doctor
 
-    /// Checks the whole chain: config, library, picker binary, thumbnail cache, history and
-    /// the hotkey. Everything it reports is something that has actually gone wrong for
-    /// someone at least once.
+    /// Checks the whole chain: config, library, picker binary, thumbnail cache at the size the
+    /// picker will really request, history, the Spaces store and the hotkey. Everything it
+    /// reports is something that has actually gone wrong for someone at least once.
     static func doctor(_ tokens: [String], environment: CLIEnvironment) throws -> Int32 {
         let options = try OptionParser.parse(
             tokens, spec: OptionSpec(boolOptions: ["json"],
@@ -966,20 +966,52 @@ public struct CLI {
         for warning in scan.warnings { checks.append(("library warning", false, warning)) }
 
         // The binary everything with a window is delegated to.
-        if let picker = PickerLocator.locate(environment: environment.environment) {
-            checks.append(("walle-picker", true, picker.path))
+        let pickerPath = PickerLocator.locate(environment: environment.environment)
+        if let pickerPath {
+            checks.append(("walle-picker", true, pickerPath.path))
         } else {
             checks.append(("walle-picker", false,
                            "not found; set WALLE_PICKER or run ./scripts/install.sh"))
         }
 
-        // Thumbnail cache
-        let cache = ThumbnailCache(directory: environment.paths.thumbnailsDir,
-                                   maxPx: config.thumbMaxPx)
-        let cacheBytes = cache.cacheSizeBytes()
-        checks.append(("thumbnail cache", cacheBytes > 0,
-                       String(cacheBytes) + " bytes in " + environment.paths.thumbnailsDir.path
-                       + (cacheBytes > 0 ? "" : " (run walle cache)")))
+        // Thumbnail cache, checked against the size the picker will actually request. A
+        // directory full of thumbnails built for an older display looks healthy if only its
+        // byte count is reported, and the symptom is soft cards.
+        let thumbnailsDir = environment.paths.thumbnailsDir
+        if pickerPath != nil, !scan.wallpapers.isEmpty,
+           let answer = capturePicker(
+             ["--thumb-size", "--widest-aspect",
+              String(walleWidestAspect(scan.wallpapers))], environment),
+           let pixels = Int(answer) {
+            let cache = ThumbnailCache(directory: thumbnailsDir, maxPx: pixels)
+            let cached = scan.wallpapers.filter { cache.existingThumbnail(for: $0) != nil }.count
+            let total = scan.wallpapers.count
+            let bytes = cache.cacheSizeBytes()
+            if cached == total {
+                checks.append(("thumbnail cache", true,
+                               "\(cached)/\(total) at \(pixels) px, \(bytes) bytes"))
+            } else if cached > 0 {
+                checks.append(("thumbnail cache", true,
+                               "\(cached)/\(total) at \(pixels) px, \(bytes) bytes"))
+                notes.append("thumbnail cache is missing \(total - cached) of \(total) "
+                             + "thumbnails; run 'walle cache'")
+            } else {
+                checks.append(("thumbnail cache", false,
+                               "none of \(total) thumbnails cached at \(pixels) px; "
+                               + "run 'walle cache'"))
+            }
+        } else {
+            // Picker unavailable, or no library to size against: report raw size as before.
+            let cache = ThumbnailCache(directory: thumbnailsDir, maxPx: config.thumbMaxPx)
+            let cacheBytes = cache.cacheSizeBytes()
+            checks.append(("thumbnail cache", cacheBytes > 0 || scan.wallpapers.isEmpty,
+                           String(cacheBytes) + " bytes in " + thumbnailsDir.path
+                           + (cacheBytes > 0 ? "" : " (run walle cache)")))
+            if pickerPath != nil, !scan.wallpapers.isEmpty {
+                notes.append("could not ask walle-picker for the thumbnail size; "
+                             + "cache coverage was not checked")
+            }
+        }
 
         // History and state
         let historyURL = environment.paths.historyFile
@@ -987,6 +1019,46 @@ public struct CLI {
         checks.append(("history", true,
                        entries.isEmpty ? "empty (" + historyURL.path + ")"
                                        : "latest " + entries[0].path))
+
+        // Spaces and the private wallpaper store. This is the state the every-Space sync
+        // writes, so doctor should say whether it is usable before an apply tries to use it.
+        checks.append(("spaces", true,
+                       config.spaces == .all
+                       ? "on  - every apply is copied onto every Space"
+                       : "off - only the Space you are on changes"))
+        let storeURL = WallpaperStore.indexURL(environment: environment.environment)
+        if let override = environment.environment["WALLE_WALLPAPER_STORE"], !override.isEmpty {
+            // An override deliberately targets a copy: the live store is not touched and
+            // WallpaperAgent is not restarted. Say so, or the rest of this report misleads.
+            let readable = (try? WallpaperStore.spaces(at: storeURL)) != nil
+            checks.append(("wallpaper store", readable,
+                           readable ? "test override: " + override
+                                    : "test override is not a readable store: " + override))
+        } else {
+            do {
+                let summaries = try WallpaperStore.spaces(at: storeURL)
+                let inventory = WallpaperStore.spaceInventory()
+                var detail = String(summaries.count) + " entries"
+                if inventory.isKnown {
+                    detail += ", " + String(inventory.switchable.count) + " switchable, "
+                        + String(inventory.collapsed.count) + " collapsed"
+                    let stale = Set(summaries.map(\.key)).subtracting(inventory.all)
+                    if !stale.isEmpty {
+                        detail += ", " + String(stale.count)
+                            + " stale (run 'walle spaces all --prune')"
+                    }
+                } else {
+                    detail += ", could not read com.apple.spaces"
+                }
+                checks.append(("wallpaper store", true, detail))
+            } catch {
+                // With the every-Space sync off, an unreadable store only affects
+                // 'walle spaces'; with it on, this is why an apply would report a warning.
+                checks.append(("wallpaper store", config.spaces == .all,
+                               String(describing: error)
+                               + (config.spaces == .all ? "; every-Space sync will fail" : "")))
+            }
+        }
 
         // Hotkey daemon
         let skhdCandidates = ["/opt/homebrew/bin/skhd", "/usr/local/bin/skhd"]
