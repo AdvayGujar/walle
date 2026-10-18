@@ -11,11 +11,11 @@ macOS has nothing like those tools. The built-in route is System Settings, which
 Every third-party wallpaper app is a GUI with a menu bar icon, a preferences pane, and a process
 that stays resident whether you are using it or not. walle is the opposite:
 
-- **Two small binaries** — 484 KB and 616 KB, no dependencies, nothing installed at runtime
+- **Two small binaries** — 520 KB and 636 KB, no dependencies, nothing installed at runtime
 - **No UI besides the picker** — no dock icon, no menu bar item, no preferences window
 - **No background process** — zero processes and zero CPU when the picker is closed
 - **Keyboard first** — configured from the command line, driven from the keyboard
-- **Quick** — ~170 ms from hotkey to window, ~85 MB while open
+- **Quick** — ~130 ms from hotkey to window, ~95 MB while open
 
 ### Coming from a Linux setup
 
@@ -234,6 +234,8 @@ permanently removed unless you pass `--prune`.
 | apply_to | all | all screens, or the one under the pointer |
 | fill_mode | fill | fill, fit, stretch or center |
 | thumb_max_px | 1600 | manual floor for thumbnail size; see below |
+| spaces | current | current, or all: copy every apply onto every Space |
+| log_level | warn | silent, error, warn or info |
 
 ### Some useful settings
 
@@ -256,7 +258,9 @@ if you want more resolution than the geometry requires.
 **On the config file:** it is written once by the installer and is authoritative from then on,
 so changing a default in a new version will not reach it. That is deliberate — your settings
 survive upgrades. Editing commands (`config set/unset`, `dir add/remove/use`) change only the
-line for the setting involved, so comments and your own key order survive too.
+line for the setting involved, so comments and your own key order survive too. A setting that a
+newer version has retired is ignored quietly, so an old config keeps working; a misspelled
+setting is still reported as a warning.
 
 ---
 
@@ -321,7 +325,7 @@ decoded.
     Sources/WalleKit/      AppKit: window, cards, corridor
     Sources/walle/         CLI executable
     Sources/walle-picker/  GUI executable
-    Tests/WalleCoreTests/  130 tests in 13 suites
+    Tests/WalleCoreTests/  145 tests in 14 suites
     scripts/               swift.sh, build.sh, install.sh, uninstall.sh
     tools/                 offscreen geometry diagnostics
 
@@ -329,30 +333,30 @@ decoded.
 
 ## Performance
 
-On Apple silicon with a 1512x982 Retina display and a 5-image library (re-measured after the
-Spaces work):
+On Apple silicon with a 1512x982 Retina display and a 13-image library (re-measured for this
+version):
 
 | Metric | Value |
 | --- | --- |
-| `walle` binary, stripped | 484 KB |
-| `walle-picker` binary, stripped | 616 KB |
-| CLI start | ~10 ms |
-| Picker: process start to window | ~170 ms |
-| Peak memory | ~85 MB picker, ~7 MB CLI |
+| `walle` binary, stripped | 520 KB |
+| `walle-picker` binary, stripped | 636 KB |
+| CLI start | ~9 ms |
+| Picker: process start to window | ~120 ms |
+| Peak memory | ~95 MB picker, ~8 MB CLI |
 | Processes alive when closed | 0 |
 
 About 65 ms of the cold start is the OS loading AppKit before any walle code runs, and about
 22 MB of the memory is the full-screen Retina backing store needed to dim the screen. Both are
 inherent to being a full-screen overlay. The rest of the memory is decoded thumbnails: this
-display's card geometry requires 1837-px thumbnails, and several are resident at once. The Spaces
-feature itself runs in the `walle` CLI process, not the picker, so it does not affect these
-numbers.
+display's card geometry needs roughly 2000-px thumbnails for the widest wallpaper, and several
+are resident at once. The Spaces feature itself runs in the `walle` CLI process, not the picker,
+so it does not affect these numbers.
 
 ---
 
 ## Development
 
-    ./scripts/swift.sh test              # 130 tests in 13 suites
+    ./scripts/swift.sh test              # 145 tests in 14 suites
     ./scripts/swift.sh build -c release
     ./scripts/clean.sh                   # reclaim disk
 
