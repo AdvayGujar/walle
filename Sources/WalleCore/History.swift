@@ -62,8 +62,18 @@ public struct HistoryStore: Sendable {
 
     /// All entries, newest first. A missing file is an empty history. Corrupt lines
     /// are skipped; an unreadable existing file throws.
+    ///
+    /// With a limit the file is read from the end only, so `history --limit 5` does not
+    /// pay for a history that has been growing for months.
     public func entries(limit: Int? = nil) throws -> [HistoryEntry] {
         guard fileManager.fileExists(atPath: fileURL.path) else { return [] }
+        guard let limit else { return try allEntriesNewestFirst() }
+        guard limit > 0 else { return [] }
+        return try newestEntries(limit: limit)
+    }
+
+    /// The whole file, decoded newest-first.
+    private func allEntriesNewestFirst() throws -> [HistoryEntry] {
         let data = try Data(contentsOf: fileURL)
         let decoder = Self.makeDecoder()
         var newestFirst: [HistoryEntry] = []
@@ -73,10 +83,50 @@ public struct HistoryStore: Sendable {
             }
         }
         newestFirst.reverse()
-        guard let limit else { return newestFirst }
-        guard limit > 0 else { return [] }
-        return Array(newestFirst.prefix(limit))
+        return newestFirst
     }
+
+    /// The newest `limit` decodable entries, read from the end of the file.
+    ///
+    /// Every line is a self-contained entry and the file is append-only, so walking the
+    /// tail backwards gives exactly what a full read then `prefix(limit)` gives, while
+    /// a corrupt or truncated line is still skipped rather than ending the read. A
+    /// chunk boundary can fall mid-line, so the first fragment of each chunk is carried
+    /// into the next one.
+    private func newestEntries(limit: Int) throws -> [HistoryEntry] {
+        let handle = try FileHandle(forReadingFrom: fileURL)
+        defer { try? handle.close() }
+        let size = try handle.seekToEnd()
+        guard size > 0 else { return [] }
+
+        let decoder = Self.makeDecoder()
+        var entries: [HistoryEntry] = []
+        var carry = Data()
+        var position = size
+        while position > 0, entries.count < limit {
+            let readSize = min(Self.tailChunkSize, Int(position))
+            position -= UInt64(readSize)
+            try handle.seek(toOffset: position)
+            guard var chunk = try handle.read(upToCount: readSize) else { break }
+            chunk.append(carry)
+
+            var fragments = chunk.split(separator: 0x0A, omittingEmptySubsequences: false)
+            if position > 0, !fragments.isEmpty {
+                // May begin mid-line; it continues in the chunk below this one.
+                carry = Data(fragments.removeFirst())
+            }
+            for fragment in fragments.reversed() where !fragment.isEmpty {
+                if let entry = try? decoder.decode(HistoryEntry.self, from: Data(fragment)) {
+                    entries.append(entry)
+                    if entries.count == limit { break }
+                }
+            }
+        }
+        return entries
+    }
+
+    /// 16 KiB is enough for dozens of entries, so a small limit is normally one read.
+    private static let tailChunkSize = 16 * 1024
 
     /// Truncates the file to empty. A missing file is not an error.
     public func clear() throws {
