@@ -522,7 +522,8 @@ public struct CLI {
         if options.has("json") {
             try emitJSON([
                 "count": wallpapers.count,
-                "roots": scanConfig.wallpaperDirs.isEmpty ? extraDirs : scanConfig.wallpaperDirs,
+                // Every root the scan actually walked: the configured ones plus --dir.
+                "roots": scanConfig.wallpaperDirs + extraDirs,
                 "rootCounts": result.rootCounts,
                 "warnings": result.warnings,
                 "wallpapers": wallpapers.map { wallpaper in
