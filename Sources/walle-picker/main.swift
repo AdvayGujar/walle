@@ -184,7 +184,8 @@ case "--snapshot":
                                                    width: width, height: height),
                             currentPath: current,
                             transition: transition,
-                            debugColours: debugColours)
+                            debugColours: debugColours,
+                            synchronousThumbnails: true)
     view.reload(library: library, focus: focusIndex(in: library, currentPath: current))
     do {
         try view.snapshot(to: url)

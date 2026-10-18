@@ -204,6 +204,22 @@ struct ThumbnailProviderTests {
         }
     }
 
+    @Test func cachedImageReturnsOnlyResidentImages() throws {
+        try withTempDirectory { dir in
+            let imageURL = dir.appendingPathComponent("cached.png")
+            try writeImage(at: imageURL, width: 120, height: 90)
+            let wallpaper = try wallpaper(named: "cached.png", in: dir)
+            let (provider, _) = makeProvider(dir: dir, maxPx: 64)
+
+            #expect(provider.cachedImage(for: wallpaper) == nil)
+            #expect(provider.image(for: wallpaper) != nil)
+            #expect(provider.cachedImage(for: wallpaper) != nil)
+
+            provider.clearMemoryCache()
+            #expect(provider.cachedImage(for: wallpaper) == nil)
+        }
+    }
+
     @Test func memoryCacheCountGrowsAndClears() throws {
         try withTempDirectory { dir in
             let imageURL = dir.appendingPathComponent("one.png")

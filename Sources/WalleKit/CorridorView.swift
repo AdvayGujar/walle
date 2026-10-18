@@ -29,6 +29,14 @@ public enum SnapshotError: Error, CustomStringConvertible {
 /// like the cards sliding rather than the pictures being swapped.
 public final class CorridorView: NSView {
 
+    /// A card handed to a @Sendable provider completion. The provider delivers on the
+    /// main queue, so the body runs under `MainActor.assumeIsolated`.
+    private final class CardBox: @unchecked Sendable {
+        let card: CardLayer
+        init(_ card: CardLayer) { self.card = card }
+    }
+
+    private let synchronousThumbnails: Bool
     private var config: Config
     private var screenMetrics: ScreenMetrics
     private var provider: ThumbnailProvider
@@ -62,9 +70,12 @@ public final class CorridorView: NSView {
     public var onApply: ((Wallpaper) -> Void)?
     public var onDismiss: (() -> Void)?
 
+    /// `synchronousThumbnails` is for --snapshot, which renders the layer tree immediately
+    /// and therefore needs every image decoded before it returns. The interactive picker
+    /// leaves it false and fills cards as the provider delivers them.
     public init(frame: NSRect, config: Config, provider: ThumbnailProvider,
                 currentPath: String?, transition: Double = 1,
-                debugColours: Bool = false) {
+                debugColours: Bool = false, synchronousThumbnails: Bool = false) {
         self.config = config
         self.screenMetrics = ScreenMetrics(width: Double(frame.width),
                                            height: Double(frame.height))
@@ -72,6 +83,7 @@ public final class CorridorView: NSView {
         self.currentPath = currentPath
         self.transition = min(1, max(0, transition))
         self.debugColours = debugColours
+        self.synchronousThumbnails = synchronousThumbnails
         super.init(frame: frame)
         wantsLayer = true
         backdrop.backgroundColor = NSColor.black
@@ -91,13 +103,10 @@ public final class CorridorView: NSView {
         self.library = library
         self.focus = library.isEmpty ? 0 : Queue.wrapIndex(focus, count: library.count)
         cancelAnimation()
-        // Draw the card shapes immediately and decode their images on the next run loop
-        // pass. Waiting for five JPEG decodes before the window appears was a large part of
-        // the cold-start time, and an empty card for one frame costs nothing.
-        rebuildCards(reloadContents: false)
-        Timer.scheduledTimer(withTimeInterval: 0, repeats: false) { [weak self] _ in
-            self?.rebuildCards(reloadContents: true)
-        }
+        // Draw the shapes immediately and let the provider fill the images in. A cold
+        // cache used to freeze the window while it generated every thumbnail; now the
+        // row appears at once and each card is populated as its decode lands.
+        rebuildCards()
     }
 
     // MARK: - animation clock
@@ -126,7 +135,7 @@ public final class CorridorView: NSView {
             self.easedProgress = 1 - pow(1 - linear, 3)
             self.transition = self.fromTransition
                 + (self.toTransition - self.fromTransition) * self.easedProgress
-            self.rebuildCards(reloadContents: false)
+            self.rebuildCards()
             if linear >= 1 {
                 timer.invalidate()
                 self.animationTimer = nil
@@ -134,7 +143,7 @@ public final class CorridorView: NSView {
                 self.rotationFrom = [:]
                 self.rotationTo = [:]
                 self.rotationContents = [:]
-                self.rebuildCards(reloadContents: false)
+                self.rebuildCards()
             }
         }
         RunLoop.main.add(timer, forMode: .common)
@@ -154,7 +163,7 @@ public final class CorridorView: NSView {
         guard animated, config.animationMs > 0, needsMove else {
             easedProgress = 1
             transition = target
-            rebuildCards(reloadContents: false)
+            rebuildCards()
             return
         }
         fromTransition = transition
@@ -176,7 +185,7 @@ public final class CorridorView: NSView {
         let engine = LayoutEngine(config: config, screen: screenMetrics, transition: transition)
         let newSlots = engine.slots(count: library.count, focus: focus)
         guard newSlots.count == count else {
-            rebuildCards(reloadContents: true)
+            rebuildCards()
             return
         }
 
@@ -212,7 +221,7 @@ public final class CorridorView: NSView {
             startAnimation(durationMs: min(config.animationMs, 260))
         } else {
             cancelAnimation()
-            rebuildCards(reloadContents: true)
+            rebuildCards()
         }
     }
 
@@ -244,7 +253,7 @@ public final class CorridorView: NSView {
         super.layout()
         screenMetrics = ScreenMetrics(width: Double(bounds.width), height: Double(bounds.height))
         backdrop.frame = bounds
-        rebuildCards(reloadContents: false)
+        rebuildCards()
     }
 
     static func color(fromHex hex: String) -> CGColor {
@@ -278,7 +287,27 @@ public final class CorridorView: NSView {
         return context.makeImage()
     }
 
-    private func rebuildCards(reloadContents: Bool) {
+    /// Paints a cache hit synchronously; otherwise claims the card for this wallpaper and
+    /// finishes it when the provider delivers. Claiming the wallpaper with nil contents
+    /// stops the animation ticks from queueing the same decode again.
+    private func loadThumbnail(_ wallpaper: Wallpaper, into card: CardLayer) {
+        if let cached = provider.cachedImage(for: wallpaper) {
+            card.setWallpaper(wallpaper, contents: cached)
+            return
+        }
+        card.setWallpaper(wallpaper, contents: nil)
+        let box = CardBox(card)
+        let expectedPath = wallpaper.path
+        provider.imageAsync(for: wallpaper) { image in
+            MainActor.assumeIsolated {
+                // The row may have rotated while this decode was in flight.
+                guard box.card.wallpaper?.path == expectedPath else { return }
+                box.card.setContents(image)
+            }
+        }
+    }
+
+    private func rebuildCards() {
         let engine = LayoutEngine(config: config, screen: screenMetrics, transition: transition)
         let slots = engine.slots(count: library.count, focus: focus)
         currentSlots = slots
@@ -309,9 +338,12 @@ public final class CorridorView: NSView {
             // thumbnail made everything visibly soft. The single size also means the image
             // never changes as a card slides into the centre, so there is no decode stall
             // and nothing to preload.
-            if reloadContents || card.wallpaper?.path != wallpaper.path {
-                let image = provider.image(for: wallpaper)
-                card.setWallpaper(wallpaper, contents: image)
+            if !debugColours, card.wallpaper?.path != wallpaper.path {
+                if synchronousThumbnails {
+                    card.setWallpaper(wallpaper, contents: provider.image(for: wallpaper))
+                } else {
+                    loadThumbnail(wallpaper, into: card)
+                }
             }
             if debugColours {
                 card.setContents(CorridorView.solidImage(forSlot: index))

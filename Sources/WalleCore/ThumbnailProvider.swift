@@ -112,6 +112,12 @@ public final class ThumbnailProvider: @unchecked Sendable {
         return finish(entry: entry, key: key, image: decoded)
     }
 
+    /// The decoded image if it is already in memory, without generating or decoding
+    /// anything. Lets the picker paint a hit synchronously and defer only a miss.
+    public func cachedImage(for wallpaper: Wallpaper) -> CGImage? {
+        memoryCache.object(forKey: memoryKey(for: wallpaper) as NSString)
+    }
+
     /// Decodes off the calling thread and delivers on the main queue.
     /// Repeated requests for the same key while one is already in flight are coalesced
     /// into the same work; every caller still receives the result.
