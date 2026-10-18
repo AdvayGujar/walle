@@ -64,21 +64,26 @@ public final class ThumbnailProvider: @unchecked Sendable {
         qos: .userInitiated,
         attributes: .concurrent)
 
-    public init(cache: ThumbnailCache, maxPx: Int) {
+    /// `imageBudget` is how many decoded images the caller can keep on screen at once.
+    /// The picker passes its slot count plus the cards entering and leaving a rotation;
+    /// the default covers a five-card row for other callers.
+    public init(cache: ThumbnailCache, maxPx: Int, imageBudget: Int = 8) {
         self.cache = cache
 
-        // Bound the decoded-image cache by real bytes, sized to what the picker actually
-        // holds at once: a full row of cards plus the images that can slide through it.
+        // Bound the decoded-image cache by the cards that can actually be displayed. The
+        // old bound (a fixed fifteen images) predated the single size class and let the
+        // picker hold far more decoded bitmaps than a row can ever show -- the single
+        // largest contributor to its memory use. A displayed card also retains its image
+        // through its layer, so evicting an off-screen entry costs a re-decode, not a
+        // blank card.
         //
-        // There is a single thumbnail size now, so the old "3 previews + 12 row
-        // thumbnails" arithmetic is gone; the budget is one decoded image (a 16:9
-        // approximation of the square pixel budget) times a row plus headroom. Getting
-        // this wrong was previously the single largest contributor to the picker's memory
-        // use.
+        // The nine-sixteenths factor turns the square pixel budget into a 16:9 estimate;
+        // the limit only has to be an upper bound, not an exact byte count.
         let nineSixteenths = 9.0 / 16.0
         let typical = Double(max(1, maxPx) * max(1, maxPx)) * 4 * nineSixteenths
-        memoryCache.totalCostLimit = Int(typical * 15)
-        memoryCache.countLimit = 64
+        let budgetedImages = max(2, imageBudget)
+        memoryCache.totalCostLimit = Int(typical * Double(budgetedImages))
+        memoryCache.countLimit = budgetedImages
         memoryCache.delegate = counter
     }
 

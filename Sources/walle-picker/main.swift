@@ -83,7 +83,8 @@ func makeProvider(library: [Wallpaper], width: Double, height: Double) -> Thumbn
     let pixels = max(config.thumbMaxPx, required)
     return ThumbnailProvider(
         cache: ThumbnailCache(directory: paths.thumbnailsDir, maxPx: pixels),
-        maxPx: pixels)
+        maxPx: pixels,
+        imageBudget: config.slots + 2)
 }
 
 func loadLibrary() -> [Wallpaper] {
