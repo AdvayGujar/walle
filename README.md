@@ -160,6 +160,7 @@ you are looking at. See [Wallpapers and Spaces](#wallpapers-and-spaces) below.
     walle spaces on | off       Apply every wallpaper to every Space, or not
     walle spaces all            Copy the current wallpaper onto every Space now
     walle spaces all --prune    Also drop entries for Spaces you deleted
+    walle spaces all --dry-run  Show the same report, write nothing
 
     walle config list|get|set|unset|edit|path
     walle doctor                Check the install end to end
@@ -190,6 +191,7 @@ to the other Spaces, so the result is not reverted a moment later.
     walle spaces               # the mode, the live Spaces, and any stale entries
     walle spaces all           # sync now, without changing the mode
     walle spaces all --prune   # also drop entries for Spaces you have deleted
+    walle spaces all --dry-run # show what the sync would change, write nothing
 
 macOS never tidies up after a deleted Space, so the store slowly fills with entries for Spaces
 that no longer exist — while a Space created since you last applied a wallpaper has no entry at
@@ -198,7 +200,8 @@ of Spaces that *actually exist* rather than trusting the store's own keys.
 
 This writes macOS's private wallpaper store, so walle backs the file up first (as
 `Index.plist.walle-backup`) and restarts `WallpaperAgent` so the change takes effect. Nothing is
-permanently removed unless you pass `--prune`.
+permanently removed unless you pass `--prune`. `walle spaces all --dry-run` prints the same report
+without backing up, writing or restarting anything; `spaces on --dry-run` previews the toggle too.
 
 ---
 
@@ -325,7 +328,7 @@ decoded.
     Sources/WalleKit/      AppKit: window, cards, corridor
     Sources/walle/         CLI executable
     Sources/walle-picker/  GUI executable
-    Tests/WalleCoreTests/  145 tests in 14 suites
+    Tests/WalleCoreTests/  152 tests in 14 suites
     scripts/               swift.sh, build.sh, install.sh, uninstall.sh
     tools/                 offscreen geometry diagnostics
 
@@ -356,7 +359,7 @@ so it does not affect these numbers.
 
 ## Development
 
-    ./scripts/swift.sh test              # 145 tests in 14 suites
+    ./scripts/swift.sh test              # 152 tests in 14 suites
     ./scripts/swift.sh build -c release
     ./scripts/clean.sh                   # reclaim disk
 
