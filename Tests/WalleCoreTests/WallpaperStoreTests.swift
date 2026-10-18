@@ -70,7 +70,9 @@ struct WallpaperStoreTests {
         defer { try? FileManager.default.removeItem(at: dir) }
 
         let result = try WallpaperStore.applyDefaultToAllSpaces(
-            at: url, liveSpaces: ["SPACE-A", "SPACE-B"], sourcePath: "/tmp/shared.jpg")
+            at: url,
+            options: WallpaperStore.SyncOptions(
+                liveSpaces: ["SPACE-A", "SPACE-B"], sourcePath: "/tmp/shared.jpg"))
         #expect(result.updated.sorted() == ["SPACE-A", "SPACE-B"])
         #expect(result.backupPath != nil)
 
@@ -120,7 +122,9 @@ struct WallpaperStoreTests {
         try! data.write(to: url)
 
         let result = try WallpaperStore.applyDefaultToAllSpaces(
-            at: url, liveSpaces: ["SPACE-A", "SPACE-B"], sourcePath: "/tmp/shared.jpg")
+            at: url,
+            options: WallpaperStore.SyncOptions(
+                liveSpaces: ["SPACE-A", "SPACE-B"], sourcePath: "/tmp/shared.jpg"))
         #expect(result.updated.sorted() == ["SPACE-A", "SPACE-B"])
 
         // Both the Default node and the per-display node must now point at the new wallpaper.
@@ -143,14 +147,79 @@ struct WallpaperStoreTests {
         let (url, dir) = makeStore()
         defer { try? FileManager.default.removeItem(at: dir) }
 
-        _ = try WallpaperStore.applyDefaultToAllSpaces(
-            at: url, liveSpaces: ["SPACE-A", "SPACE-B"], sourcePath: "/tmp/shared.jpg")
-        let second = try WallpaperStore.applyDefaultToAllSpaces(
-            at: url, liveSpaces: ["SPACE-A", "SPACE-B"], sourcePath: "/tmp/shared.jpg")
+        let options = WallpaperStore.SyncOptions(
+            liveSpaces: ["SPACE-A", "SPACE-B"], sourcePath: "/tmp/shared.jpg")
+        _ = try WallpaperStore.applyDefaultToAllSpaces(at: url, options: options)
+        let settled = try Data(contentsOf: url)
+        let second = try WallpaperStore.applyDefaultToAllSpaces(at: url, options: options)
         // Nothing to do the second time. Comparing serialised bytes would wrongly report
         // changes here, because equal dictionaries do not always serialise identically.
         #expect(second.updated.isEmpty)
         #expect(second.alreadyMatching.sorted() == ["SPACE-A", "SPACE-B"])
+        // With nothing to write there is no new backup and the store is left untouched.
+        #expect(second.backupPath == nil)
+        #expect(try Data(contentsOf: url) == settled)
+    }
+
+    @Test("a dry run reports the changes and writes nothing")
+    func dryRunWritesNothing() throws {
+        let (url, dir) = makeStore()
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        let before = try Data(contentsOf: url)
+        let result = try WallpaperStore.applyDefaultToAllSpaces(
+            at: url,
+            options: WallpaperStore.SyncOptions(
+                liveSpaces: ["SPACE-A", "SPACE-B"],
+                sourcePath: "/tmp/shared.jpg",
+                dryRun: true))
+        #expect(result.updated.sorted() == ["SPACE-A", "SPACE-B"])
+        #expect(result.backupPath == nil)
+        #expect(try Data(contentsOf: url) == before)
+        let backup = url.deletingLastPathComponent()
+            .appendingPathComponent("Index.plist.walle-backup")
+        #expect(!FileManager.default.fileExists(atPath: backup.path))
+    }
+
+    @Test("the store-write wait returns at once when the write already landed")
+    func waitReturnsImmediatelyWhenTheWriteLanded() throws {
+        let (url, dir) = makeStore()
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        let started = Date()
+        // The file exists with an mtime after the epoch baseline, so no polling is needed.
+        WallpaperStore.waitForStoreWrite(at: url,
+                                         since: Date(timeIntervalSince1970: 0),
+                                         timeout: 1.0)
+        #expect(Date().timeIntervalSince(started) < 0.2)
+    }
+
+    @Test("a missing store has no modification date")
+    func missingStoreHasNoDate() {
+        let url = URL(fileURLWithPath: "/tmp/walle-no-store-\(UUID().uuidString).plist")
+        #expect(WallpaperStore.storeModificationDate(at: url) == nil)
+    }
+
+    @Test("a Space created during a sync gets the applied wallpaper")
+    func createsMissingSpaceFromAppliedPath() throws {
+        let (url, dir) = makeStore()
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        // The applied path is not in the store yet (the system's write has not landed). A brand
+        // new Space must still get that wallpaper, not the source entry's previous one.
+        let result = try WallpaperStore.applyDefaultToAllSpaces(
+            at: url,
+            options: WallpaperStore.SyncOptions(
+                liveSpaces: ["SPACE-A", "SPACE-B", "SPACE-C"],
+                sourcePath: "/tmp/new.jpg"))
+        #expect(result.created == ["SPACE-C"])
+
+        let data = try Data(contentsOf: url)
+        let root = try PropertyListSerialization.propertyList(
+            from: data, options: [], format: nil) as? [String: Any]
+        let entry = (root?["Spaces"] as? [String: Any])?["SPACE-C"] as? [String: Any]
+        let desktop = (entry?["Default"] as? [String: Any])?["Desktop"] as? [String: Any]
+        #expect(WallpaperStore.imagePath(ofDesktop: desktop!) == "/tmp/new.jpg")
     }
 
     @Test("sync preserves unrelated keys")
@@ -158,7 +227,8 @@ struct WallpaperStoreTests {
         let (url, dir) = makeStore()
         defer { try? FileManager.default.removeItem(at: dir) }
 
-        _ = try WallpaperStore.applyDefaultToAllSpaces(at: url, liveSpaces: ["SPACE-A", "SPACE-B"])
+        _ = try WallpaperStore.applyDefaultToAllSpaces(
+            at: url, options: WallpaperStore.SyncOptions(liveSpaces: ["SPACE-A", "SPACE-B"]))
         let data = try Data(contentsOf: url)
         let root = try PropertyListSerialization.propertyList(
             from: data, options: [], format: nil) as? [String: Any]
@@ -175,7 +245,9 @@ struct WallpaperStoreTests {
         // SPACE-C exists as a Space but the store has never heard of it, which is exactly the
         // case that made a wallpaper only reach some Spaces.
         let result = try WallpaperStore.applyDefaultToAllSpaces(
-            at: url, liveSpaces: ["SPACE-A", "SPACE-B", "SPACE-C"])
+            at: url,
+            options: WallpaperStore.SyncOptions(
+                liveSpaces: ["SPACE-A", "SPACE-B", "SPACE-C"]))
         #expect(result.created == ["SPACE-C"])
 
         let after = try WallpaperStore.spaces(at: url)
@@ -189,13 +261,15 @@ struct WallpaperStoreTests {
         defer { try? FileManager.default.removeItem(at: dir) }
 
         // Only SPACE-A still exists; SPACE-B was deleted, but the store keeps it forever.
-        let result = try WallpaperStore.applyDefaultToAllSpaces(at: url, liveSpaces: ["SPACE-A"])
+        let result = try WallpaperStore.applyDefaultToAllSpaces(
+            at: url, options: WallpaperStore.SyncOptions(liveSpaces: ["SPACE-A"]))
         #expect(result.stale == ["SPACE-B"])
         #expect(result.pruned.isEmpty)
         #expect(try WallpaperStore.spaces(at: url).count == 3)
 
         let pruned = try WallpaperStore.applyDefaultToAllSpaces(
-            at: url, liveSpaces: ["SPACE-A"], pruneStale: true)
+            at: url,
+            options: WallpaperStore.SyncOptions(liveSpaces: ["SPACE-A"], pruneStale: true))
         #expect(pruned.pruned == ["SPACE-B"])
         #expect(try WallpaperStore.spaces(at: url).count == 2)
     }
@@ -208,14 +282,18 @@ struct WallpaperStoreTests {
         // This is the bug that made the picker look broken: the default still held an old
         // picture, so copying the default silently undid the wallpaper that was just applied.
         let result = try WallpaperStore.applyDefaultToAllSpaces(
-            at: url, liveSpaces: ["SPACE-A", "SPACE-B"], sourcePath: "/tmp/old-a.jpg")
+            at: url,
+            options: WallpaperStore.SyncOptions(
+                liveSpaces: ["SPACE-A", "SPACE-B"], sourcePath: "/tmp/old-a.jpg"))
         // SPACE-A already holds the chosen picture, so only SPACE-B has to be rewritten.
         #expect(result.updated == ["SPACE-B"])
 
         // A second run finds nothing to do, which proves both Spaces converged on the picture
         // that was applied rather than on the stale default.
         let again = try WallpaperStore.applyDefaultToAllSpaces(
-            at: url, liveSpaces: ["SPACE-A", "SPACE-B"], sourcePath: "/tmp/old-a.jpg")
+            at: url,
+            options: WallpaperStore.SyncOptions(
+                liveSpaces: ["SPACE-A", "SPACE-B"], sourcePath: "/tmp/old-a.jpg"))
         #expect(again.updated.isEmpty)
         #expect(again.alreadyMatching.sorted() == ["SPACE-A", "SPACE-B"])
     }

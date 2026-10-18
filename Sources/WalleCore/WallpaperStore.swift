@@ -83,7 +83,7 @@ public enum WallpaperStore {
             throw StoreError.unexpectedShape("no Spaces dictionary")
         }
         let defaultNode = (spaces[""] as? [String: Any])?["Default"] as? [String: Any]
-        return spaces.keys.sorted { ($0.isEmpty ? "" : $0) < ($1.isEmpty ? "" : $1) }.map { key in
+        return spaces.keys.sorted().map { key in
             let node = (spaces[key] as? [String: Any])?["Default"] as? [String: Any]
             let matches: Bool
             if let defaultNode, let node {
@@ -226,6 +226,49 @@ public enum WallpaperStore {
         public let backupPath: String?
 
         public var changedAnything: Bool { !updated.isEmpty || !created.isEmpty || !pruned.isEmpty }
+
+        func withBackupPath(_ path: String?) -> SyncResult {
+            SyncResult(updated: updated, created: created, alreadyMatching: alreadyMatching,
+                       stale: stale, pruned: pruned, backupPath: path)
+        }
+    }
+
+    /// Knobs for a sync. Grouped so a call site reads as intent rather than a row of optionals.
+    public struct SyncOptions: Sendable {
+        /// The Spaces that actually exist. nil reads com.apple.spaces.
+        public var liveSpaces: [String]?
+        /// The wallpaper just applied. When set, the entry is built from this path instead of
+        /// trusting the store, which may not have caught up yet.
+        public var sourcePath: String?
+        /// Also remove entries for Spaces that no longer exist.
+        public var pruneStale: Bool
+        /// Compute and report the result without backing up, writing or restarting the agent.
+        public var dryRun: Bool
+        /// Pause before SIGKILLing WallpaperAgent so a system write that was already queued can
+        /// land first. A caller that has already watched the store advance passes false.
+        public var settleForSystemWrite: Bool
+
+        public init(liveSpaces: [String]? = nil,
+                    sourcePath: String? = nil,
+                    pruneStale: Bool = false,
+                    dryRun: Bool = false,
+                    settleForSystemWrite: Bool = true) {
+            self.liveSpaces = liveSpaces
+            self.sourcePath = sourcePath
+            self.pruneStale = pruneStale
+            self.dryRun = dryRun
+            self.settleForSystemWrite = settleForSystemWrite
+        }
+    }
+
+    /// The Spaces dictionary a sync would write, plus what changed. Computed without touching
+    /// the file so a dry run and a real run can share exactly the same logic.
+    struct SyncPlan {
+        var spaces: [String: Any]
+        var result: SyncResult
+        var changed: Bool {
+            !result.updated.isEmpty || !result.created.isEmpty || !result.pruned.isEmpty
+        }
     }
 
     /// The Spaces macOS knows about, split by kind.
@@ -286,78 +329,29 @@ public enum WallpaperStore {
         return inventory.isKnown ? inventory.all : []
     }
 
-    /// The Spaces that actually exist right now, from com.apple.spaces.
+    /// The store's modification date, or nil when it does not exist.
     ///
-    /// This matters because the two lists drift apart in both directions. Creating a Space makes
-    /// macOS add an entry to the wallpaper store, but deleting a Space leaves its entry behind
-    /// forever, so the store accumulates keys for Spaces that are gone. Comparing the two is the
-    /// only way to know which Spaces still need a wallpaper.
-    static func legacyLiveSpaceUUIDs(preferencesURL: URL? = nil) -> [String] {
-        let url = preferencesURL ?? FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent("Library/Preferences/com.apple.spaces.plist")
-        guard let data = FileManager.default.contents(atPath: url.path),
-              let root = try? PropertyListSerialization.propertyList(
-                from: data, options: [], format: nil) as? [String: Any] else { return [] }
-
-        // Preferred source: the per-monitor Space lists. A monitor record also carries
-        // "Collapsed Space" entries for displays that are not showing a desktop, and those are
-        // not Spaces the user can switch to. Counting them made walle report more Spaces than
-        // actually exist.
-        if let config = root["SpacesDisplayConfiguration"] as? [String: Any] {
-            var management = config["Management Data"] as? [String: Any]
-            if management == nil, let blob = config["Management Data"] as? Data,
-               let inner = try? PropertyListSerialization.propertyList(
-                from: blob, options: [], format: nil) as? [String: Any] {
-                management = inner
-            }
-            if let monitors = management?["Monitors"] as? [[String: Any]] {
-                var fromMonitors: [String] = []
-                for monitor in monitors {
-                    for space in monitor["Spaces"] as? [[String: Any]] ?? [] {
-                        if let uuid = space["uuid"] as? String, !uuid.isEmpty {
-                            fromMonitors.append(uuid)
-                        }
-                    }
-                }
-                if !fromMonitors.isEmpty {
-                    return Array(Set(fromMonitors)).sorted()
-                }
-            }
-        }
-
-        // Fallback for a layout we do not recognise: collect every uuid we can find, which may
-        // over-count, but keeps the sync working rather than doing nothing.
-        var found: Set<String> = []
-        func walk(_ node: Any) {
-            if let dict = node as? [String: Any] {
-                if let uuid = dict["uuid"] as? String, !uuid.isEmpty { found.insert(uuid) }
-                for value in dict.values { walk(value) }
-            } else if let array = node as? [Any] {
-                for value in array { walk(value) }
-            } else if let nested = node as? Data,
-                      let inner = try? PropertyListSerialization.propertyList(
-                        from: nested, options: [], format: nil) {
-                walk(inner)
-            }
-        }
-        walk(root)
-        return found.sorted()
+    /// Captured before an apply so the wait below can tell "the system has written" from
+    /// "nothing has happened yet". A timestamp taken after the picker exits cannot tell those
+    /// apart: if the write landed a moment earlier it is missed, and the caller sleeps out the
+    /// whole timeout instead.
+    static func storeModificationDate(at url: URL) -> Date? {
+        (try? FileManager.default.attributesOfItem(atPath: url.path))?[.modificationDate] as? Date
     }
 
-    /// Waits until the store is written again after `afterDate`, or `timeout` elapses.
+    /// Waits until the store has been written since `baseline`, or `timeout` elapses.
     ///
     /// `setDesktopImageURL` persists asynchronously, and the system's write lands a beat after
-    /// the call returns. When we know which wallpaper was just applied, syncing before that
-    /// write has landed means OUR write gets overwritten by the system's delayed write a moment
-    /// later — reverting every Space except the one the user is on. Watching the store's
-    /// modification time advance is the reliable signal that the system's write has landed.
-    static func waitForStoreWrite(after afterDate: Date, at url: URL, timeout: TimeInterval = 2.0) {
+    /// the call returns. Syncing before that write has landed means OUR write gets overwritten
+    /// by the system's delayed write a moment later — reverting every Space except the one the
+    /// user is on. Watching the store's modification time change is the reliable signal.
+    static func waitForStoreWrite(at url: URL, since baseline: Date?,
+                                  timeout: TimeInterval = 2.0) {
         let deadline = Date().addingTimeInterval(timeout)
         while Date() < deadline {
-            if let attrs = try? FileManager.default.attributesOfItem(atPath: url.path),
-               let modified = attrs[.modificationDate] as? Date,
-               modified > afterDate {
-                return
+            if let modified = storeModificationDate(at: url) {
+                // A store that did not exist before the apply has been written when it appears.
+                if baseline == nil || modified != baseline { return }
             }
             Thread.sleep(forTimeInterval: 0.05)
         }
@@ -369,18 +363,40 @@ public enum WallpaperStore {
     /// way to address another Space, and System Events' `every desktop` resolves to the current
     /// Space only on current macOS.
     ///
-    /// `sourcePath` is the wallpaper that was just applied, so the copy starts from what the
-    /// user actually chose rather than from a default that macOS may not have updated.
+    /// A dry run computes exactly the same result and writes nothing, which is why the planning
+    /// half lives in `makePlan` and is shared by both paths.
     @discardableResult
-    public static func applyDefaultToAllSpaces(at url: URL,
-                                               liveSpaces: [String]? = nil,
-                                               sourcePath: String? = nil,
-                                               pruneStale: Bool = false) throws -> SyncResult {
+    public static func applyDefaultToAllSpaces(
+        at url: URL,
+        options: SyncOptions = SyncOptions()
+    ) throws -> SyncResult {
         let root = try readRoot(at: url)
+        let plan = try makePlan(root: root, options: options)
+        guard plan.changed, !options.dryRun else { return plan.result }
+
+        // Back up only when a write is actually going to happen: a no-op sync used to copy the
+        // file every time, and a dry run must not touch anything at all.
+        let backupPath = backUp(url)
+        var newRoot = root
+        newRoot["Spaces"] = plan.spaces
+        let data = try PropertyListSerialization.data(fromPropertyList: newRoot,
+                                                      format: .binary, options: 0)
+        try data.write(to: url, options: .atomic)
+
+        // Only poke the live agent when we actually wrote the live store. Running against a
+        // copy (via WALLE_WALLPAPER_STORE) must have no effect on the running system.
+        if url.path == indexURL(environment: [:]).path {
+            restartWallpaperAgent(settleForSystemWrite: options.settleForSystemWrite)
+        }
+        return plan.result.withBackupPath(backupPath)
+    }
+
+    /// Works out the synced Spaces dictionary and what would change, without writing anything.
+    static func makePlan(root: [String: Any], options: SyncOptions) throws -> SyncPlan {
         guard let spaces = root["Spaces"] as? [String: Any] else {
             throw StoreError.unexpectedShape("no Spaces dictionary")
         }
-        guard let sourceKey = sourceSpaceKey(for: sourcePath, in: spaces),
+        guard let sourceKey = sourceSpaceKey(for: options.sourcePath, in: spaces),
               let sourceSpaceEntry = spaces[sourceKey] as? [String: Any],
               var sourceDesktop = sourceSpaceEntry["Default"] as? [String: Any] else {
             throw StoreError.unexpectedShape("no Space entry to copy from")
@@ -392,7 +408,7 @@ public enum WallpaperStore {
         // Passing it straight to desktopNode found no "Content" and returned nil, so the sync
         // silently fell back to copying whatever the store already held — overwriting the
         // wallpaper that had just been applied, on every Space including the current one.
-        if let sourcePath,
+        if let sourcePath = options.sourcePath,
            let template = sourceDesktop["Desktop"] as? [String: Any],
            let built = desktopNode(forPath: sourcePath, using: template) {
             sourceDesktop["Desktop"] = built
@@ -400,15 +416,8 @@ public enum WallpaperStore {
 
         // Which Spaces exist. Falling back to the store's own keys keeps this working on a
         // machine where com.apple.spaces cannot be read, at the cost of not noticing stale ones.
-        let live = liveSpaces ?? liveSpaceUUIDs()
+        let live = options.liveSpaces ?? liveSpaceUUIDs()
         let wantedKeys = live.isEmpty ? spaces.keys.sorted() : live
-
-        // Back up before touching anything, so a bad result can be undone.
-        let backup = url.deletingLastPathComponent()
-            .appendingPathComponent("Index.plist.walle-backup")
-        try? FileManager.default.removeItem(at: backup)
-        try? FileManager.default.copyItem(at: url, to: backup)
-        let backupPath = FileManager.default.fileExists(atPath: backup.path) ? backup.path : nil
 
         // Compare with NSDictionary's deep equality. Serialising and comparing bytes would be
         // wrong: two equal dictionaries routinely produce different bytes, because property
@@ -422,9 +431,12 @@ public enum WallpaperStore {
 
         for key in wantedKeys.sorted() {
             guard let entry = spaces[key] as? [String: Any] else {
-                // This Space exists but the store has never heard of it, so clone the source
-                // entry wholesale: it already has precisely the shape macOS expects.
-                newSpaces[key] = sourceSpaceEntry
+                // This Space exists but the store has never heard of it. Clone the source
+                // entry, but with the rebuilt Default and Displays: cloning the raw entry gave
+                // the new Space whatever wallpaper the source held BEFORE the apply, which is
+                // the "other Spaces did not change" symptom again.
+                newSpaces[key] = syncedEntry(sourceSpaceEntry, defaultNode: sourceDesktop,
+                                             desktopNode: sourceDesktopNode)
                 created.append(key)
                 continue
             }
@@ -448,60 +460,41 @@ public enum WallpaperStore {
         // would silently resurface if macOS ever reused the UUID.
         let stale = spaces.keys.filter { !$0.isEmpty && !wantedKeys.contains($0) }.sorted()
         var pruned: [String] = []
-        if pruneStale {
+        if options.pruneStale {
             for key in stale {
                 newSpaces.removeValue(forKey: key)
                 pruned.append(key)
             }
         }
 
-        guard !updated.isEmpty || !created.isEmpty || !pruned.isEmpty else {
-            return SyncResult(updated: [], created: [], alreadyMatching: alreadyMatching,
-                              stale: stale, pruned: [], backupPath: backupPath)
-        }
-
-        var newRoot = root
-        newRoot["Spaces"] = newSpaces
-        let data = try PropertyListSerialization.data(fromPropertyList: newRoot,
-                                                      format: .binary, options: 0)
-        try data.write(to: url, options: .atomic)
-
-        // Only poke the live agent when we actually wrote the live store. Running against a
-        // copy (via WALLE_WALLPAPER_STORE) must have no effect on the running system.
-        if url.path == indexURL(environment: [:]).path {
-            restartWallpaperAgent()
-        }
-        return SyncResult(updated: updated, created: created,
-                          alreadyMatching: alreadyMatching, stale: stale, pruned: pruned,
-                          backupPath: backupPath)
+        return SyncPlan(spaces: newSpaces,
+                        result: SyncResult(updated: updated, created: created,
+                                           alreadyMatching: alreadyMatching,
+                                           stale: stale, pruned: pruned, backupPath: nil))
     }
 
-    /// Applies the wallpaper to every Space, when the user has switched that on with
-    /// "walle spaces on". Returns a warning rather than throwing, so an apply that already
-    /// succeeded is never reported as a failure just because the Space sync did not.
-    @discardableResult
-    public static func syncIfEnabled(
-        _ mode: SpacesMode,
-        appliedPath: String?,
-        environment: [String: String] = ProcessInfo.processInfo.environment) -> String? {
-        guard mode == .all else { return nil }
-        do {
-            _ = try applyDefaultToAllSpaces(at: indexURL(environment: environment),
-                                            liveSpaces: liveSpaceUUIDs(),
-                                            sourcePath: appliedPath)
-            return nil
-        } catch {
-            return "the wallpaper was applied, but not to every Space: " + String(describing: error)
-        }
+    /// Copies the store beside itself before a write, so a bad result can be undone. Only called
+    /// when a write is actually going to happen; a no-op sync leaves the old backup alone.
+    private static func backUp(_ url: URL) -> String? {
+        let backup = url.deletingLastPathComponent()
+            .appendingPathComponent("Index.plist.walle-backup")
+        try? FileManager.default.removeItem(at: backup)
+        try? FileManager.default.copyItem(at: url, to: backup)
+        return FileManager.default.fileExists(atPath: backup.path) ? backup.path : nil
     }
 
     /// WallpaperAgent caches the store, so it has to be restarted for a direct write to show.
     /// Failure is not fatal: the store is already written and will be read on next login.
     ///
-    /// The pause matters. Restarting the agent instantly after §setDesktopImageURL§ races the
-    /// write that the call just queued, and can lose the wallpaper that was being applied.
-    static func restartWallpaperAgent() {
-        Thread.sleep(forTimeInterval: 0.4)
+    /// `settleForSystemWrite` is the pause. Restarting the agent instantly after
+    /// §setDesktopImageURL§ can race the write that call queued. The CLI apply path has already
+    /// watched the store advance before writing its own copy, so it passes false and does not
+    /// pay 0.4 s on every apply; the manual "walle spaces on|all" paths keep the pause because
+    /// they may be running moments after a System Settings change.
+    static func restartWallpaperAgent(settleForSystemWrite: Bool) {
+        if settleForSystemWrite {
+            Thread.sleep(forTimeInterval: 0.4)
+        }
         let kill = Process()
         kill.executableURL = URL(fileURLWithPath: "/usr/bin/killall")
         // SIGKILL, deliberately, not the default SIGTERM. Asked politely, WallpaperAgent flushes
