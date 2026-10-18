@@ -6,5 +6,5 @@
 /// can override it with `--version` / `WALLE_VERSION`; everything else follows
 /// from here.
 public enum WalleVersion {
-    public static let string = "1.0.0"
+    public static let string = "1.1.0"
 }
