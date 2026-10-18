@@ -12,7 +12,7 @@
 #   arbitrary prefix and touches nothing else - no ~/.local, no PATH, no config
 #   file, no sudo, no prompts:
 #
-#       ./scripts/build.sh --prefix /opt/homebrew/Cellar/walle/1.0.0
+#       ./scripts/build.sh --prefix /opt/homebrew/Cellar/walle/1.1.0
 #
 #   Either way the resulting tree is the same:
 #       PREFIX/bin/walle                            the CLI

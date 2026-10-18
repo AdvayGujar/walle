@@ -13,7 +13,7 @@
 # End users get the defaults above. Packagers (Homebrew and friends) should pass
 # --packager, which keeps every write inside PREFIX:
 #
-#   ./scripts/install.sh --packager --prefix /opt/homebrew/Cellar/walle/1.0.0
+#   ./scripts/install.sh --packager --prefix /opt/homebrew/Cellar/walle/1.1.0
 #
 # --packager implies --no-config (no writes to ~/.config), defaults --bin-dir to
 # PREFIX/bin (no PATH symlink outside the prefix) and never prompts. Combined
