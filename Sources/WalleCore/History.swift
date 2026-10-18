@@ -226,8 +226,10 @@ public enum Selection {
             return try resolveExplicit(path, library: library)
 
         case .random:
-            guard !library.isEmpty else { throw SelectionError.emptyLibrary }
-            return LibrarySort.sort(library, mode: .random, seed: seed)[0]
+            guard let picked = LibrarySort.randomElement(library, seed: seed) else {
+                throw SelectionError.emptyLibrary
+            }
+            return picked
 
         case .next:
             guard !library.isEmpty else { throw SelectionError.emptyLibrary }
