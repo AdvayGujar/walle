@@ -3,11 +3,26 @@
 ## Requirements
 
 - macOS 14 or later (developed on macOS 27)
-- Xcode or the Command Line Tools
+- Xcode 16 or the matching Command Line Tools (Swift 6)
 - [skhd](https://github.com/koekeishiya/skhd) if you want a global hotkey
 - No runtime dependencies: both binaries are self-contained.
 
-## Install
+## Homebrew
+
+```sh
+brew install AdvayGujar/tap/walle
+```
+
+The formula lives in
+[AdvayGujar/homebrew-tap](https://github.com/AdvayGujar/homebrew-tap) and builds from the release
+tarball. It installs the CLI to `$(brew --prefix)/bin/walle` and the app to
+`$(brew --prefix)/Cellar/walle/<version>/Walle.app`; the config file is still created on first
+run, not by the formula. `brew upgrade walle` updates it, `brew uninstall walle` removes it.
+
+If a hand install left an older `walle` in `~/.local/bin` and that directory comes first on
+`PATH`, it shadows Homebrew's copy. Remove the old binary or put `$(brew --prefix)/bin` first.
+
+## From a checkout
 
 ```sh
 git clone https://github.com/AdvayGujar/walle.git

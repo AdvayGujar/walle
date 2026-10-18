@@ -30,15 +30,21 @@ Pressing Space straightens the centred card into an undistorted preview; the sec
 
 ## Install
 
-macOS 14 or later, Xcode or the Command Line Tools, and
-[skhd](https://github.com/koekeishiya/skhd) if you want a global hotkey.
+macOS 14 or later, and [skhd](https://github.com/koekeishiya/skhd) if you want a global hotkey.
+
+```sh
+brew install AdvayGujar/tap/walle
+walle add ~/Pictures/Wallpapers      # or any directory of images
+walle cache                          # optional, but makes the picker open instantly
+```
+
+The formula builds from source on install, so it also needs Xcode 16 or the matching Command
+Line Tools for Swift 6. Prefer a checkout? The installer does the same thing by hand:
 
 ```sh
 git clone https://github.com/AdvayGujar/walle.git
 cd walle
 ./scripts/install.sh                 # builds, installs, and links ~/.local/bin/walle
-walle add ~/Pictures/Wallpapers      # or any directory of images
-walle cache                          # optional, but makes the picker open instantly
 ```
 
 A bare `walle` opens the picker — that is what a hotkey should run. `walle doctor` checks the

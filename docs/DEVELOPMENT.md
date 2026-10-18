@@ -57,6 +57,10 @@ same version.
    create an annotated tag, e.g. `git tag -a v1.1.0 -m "walle 1.1.0"`.
 7. Push the branch and tag, then publish the GitHub release from the tag. Attach a zipped
    `Walle.app` if you are offering a prebuilt download.
+8. Update the Homebrew tap: in
+   [AdvayGujar/homebrew-tap](https://github.com/AdvayGujar/homebrew-tap) `Formula/walle.rb`, set
+   `url` to the new tag archive and `sha256` to `shasum -a 256` of it. Verify with
+   `brew install --build-from-source AdvayGujar/tap/walle` and `brew test walle`.
 
 ### Repository topics
 
