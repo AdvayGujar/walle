@@ -83,7 +83,8 @@ func makeProvider(library: [Wallpaper], width: Double, height: Double) -> Thumbn
     let pixels = max(config.thumbMaxPx, required)
     return ThumbnailProvider(
         cache: ThumbnailCache(directory: paths.thumbnailsDir, maxPx: pixels),
-        maxPx: pixels)
+        maxPx: pixels,
+        imageBudget: config.slots + 2)
 }
 
 func loadLibrary() -> [Wallpaper] {
@@ -184,7 +185,8 @@ case "--snapshot":
                                                    width: width, height: height),
                             currentPath: current,
                             transition: transition,
-                            debugColours: debugColours)
+                            debugColours: debugColours,
+                            synchronousThumbnails: true)
     view.reload(library: library, focus: focusIndex(in: library, currentPath: current))
     do {
         try view.snapshot(to: url)

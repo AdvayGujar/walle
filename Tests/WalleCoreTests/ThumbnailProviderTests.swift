@@ -204,6 +204,22 @@ struct ThumbnailProviderTests {
         }
     }
 
+    @Test func cachedImageReturnsOnlyResidentImages() throws {
+        try withTempDirectory { dir in
+            let imageURL = dir.appendingPathComponent("cached.png")
+            try writeImage(at: imageURL, width: 120, height: 90)
+            let wallpaper = try wallpaper(named: "cached.png", in: dir)
+            let (provider, _) = makeProvider(dir: dir, maxPx: 64)
+
+            #expect(provider.cachedImage(for: wallpaper) == nil)
+            #expect(provider.image(for: wallpaper) != nil)
+            #expect(provider.cachedImage(for: wallpaper) != nil)
+
+            provider.clearMemoryCache()
+            #expect(provider.cachedImage(for: wallpaper) == nil)
+        }
+    }
+
     @Test func memoryCacheCountGrowsAndClears() throws {
         try withTempDirectory { dir in
             let imageURL = dir.appendingPathComponent("one.png")
@@ -331,38 +347,6 @@ struct ThumbnailProviderTests {
             #expect(result.completed)
             #expect(result.onMain)
             #expect(result.image == nil)
-        }
-    }
-
-    // MARK: - Preload
-
-    @Test func preloadWarmsTheMemoryCache() throws {
-        try withTempDirectory { dir in
-            var names: [String] = []
-            for index in 0..<3 {
-                let name = "preload\(index).png"
-                try writeImage(at: dir.appendingPathComponent(name), width: 120, height: 90)
-                names.append(name)
-            }
-            let wallpapers = names.compactMap { name in
-                scanWallpapers(in: dir).first { $0.name == name }
-            }
-            #expect(wallpapers.count == 3)
-            let (provider, cache) = makeProvider(dir: dir, maxPx: 64)
-
-            provider.preload(wallpapers)
-            #expect(provider.memoryCacheCount() == 3)
-            for wallpaper in wallpapers {
-                #expect(cache.existingThumbnail(for: wallpaper) != nil)
-            }
-        }
-    }
-
-    @Test func preloadWithEmptyArrayDoesNothing() throws {
-        withTempDirectory { dir in
-            let (provider, _) = makeProvider(dir: dir, maxPx: 64)
-            provider.preload([])
-            #expect(provider.memoryCacheCount() == 0)
         }
     }
 

@@ -146,6 +146,24 @@ struct ThumbnailTests {
         }
     }
 
+    @Test func thumbnailImageGeneratesWritesAndReusesTheFile() throws {
+        try withTempDirectory { dir in
+            let imageURL = dir.appendingPathComponent("one.png")
+            try writeImage(at: imageURL, width: 200, height: 150)
+            let wallpaper = try scanWallpaper(in: dir, named: "one.png")
+            let cache = cache(in: dir, maxPx: 80)
+
+            #expect(cache.existingThumbnail(for: wallpaper) == nil)
+            let image = try cache.thumbnailImage(for: wallpaper)
+            #expect(max(image.width, image.height) <= 80)
+            #expect(cache.existingThumbnail(for: wallpaper) != nil)
+
+            // The second call reads the cached file instead of generating again.
+            let again = try cache.thumbnailImage(for: wallpaper)
+            #expect(max(again.width, again.height) <= 80)
+        }
+    }
+
     @Test func corruptImageThrowsInsteadOfCrashing() throws {
         try withTempDirectory { dir in
             let badURL = dir.appendingPathComponent("bad.png")

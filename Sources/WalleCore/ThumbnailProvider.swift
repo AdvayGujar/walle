@@ -1,14 +1,14 @@
 import CoreGraphics
 import Foundation
-import ImageIO
 
 /// Bridges the on-disk `ThumbnailCache` to decoded, in-memory `CGImage`s.
 ///
-/// The picker asks for a thumbnail on the main thread while missing thumbnails are
-/// generated in the background. Decoding the same image twice wastes disk and CPU, so
-/// this type keeps a bounded `NSCache` of decoded images and coalesces concurrent
-/// requests for the same thumbnail behind a lock-protected in-flight map. Every caller
-/// that joins an in-flight request receives that request's result.
+/// The picker paints a cache hit synchronously and asks for a miss asynchronously; the
+/// decode runs off the main thread and the completion lands on the main queue. Decoding
+/// the same image twice wastes disk and CPU, so this type keeps a bounded `NSCache` of
+/// decoded images and coalesces concurrent requests for the same thumbnail behind a
+/// lock-protected in-flight map. Every caller that joins an in-flight request receives
+/// that request's result.
 public final class ThumbnailProvider: @unchecked Sendable {
 
     /// One generation in progress. Waiters park on `condition` until the image is
@@ -64,21 +64,26 @@ public final class ThumbnailProvider: @unchecked Sendable {
         qos: .userInitiated,
         attributes: .concurrent)
 
-    public init(cache: ThumbnailCache, maxPx: Int) {
+    /// `imageBudget` is how many decoded images the caller can keep on screen at once.
+    /// The picker passes its slot count plus the cards entering and leaving a rotation;
+    /// the default covers a five-card row for other callers.
+    public init(cache: ThumbnailCache, maxPx: Int, imageBudget: Int = 8) {
         self.cache = cache
 
-        // Bound the decoded-image cache by real bytes, sized to what the picker actually
-        // holds at once: a full row of cards plus the images that can slide through it.
+        // Bound the decoded-image cache by the cards that can actually be displayed. The
+        // old bound (a fixed fifteen images) predated the single size class and let the
+        // picker hold far more decoded bitmaps than a row can ever show -- the single
+        // largest contributor to its memory use. A displayed card also retains its image
+        // through its layer, so evicting an off-screen entry costs a re-decode, not a
+        // blank card.
         //
-        // There is a single thumbnail size now, so the old "3 previews + 12 row
-        // thumbnails" arithmetic is gone; the budget is one decoded image (a 16:9
-        // approximation of the square pixel budget) times a row plus headroom. Getting
-        // this wrong was previously the single largest contributor to the picker's memory
-        // use.
+        // The nine-sixteenths factor turns the square pixel budget into a 16:9 estimate;
+        // the limit only has to be an upper bound, not an exact byte count.
         let nineSixteenths = 9.0 / 16.0
         let typical = Double(max(1, maxPx) * max(1, maxPx)) * 4 * nineSixteenths
-        memoryCache.totalCostLimit = Int(typical * 15)
-        memoryCache.countLimit = 64
+        let budgetedImages = max(2, imageBudget)
+        memoryCache.totalCostLimit = Int(typical * Double(budgetedImages))
+        memoryCache.countLimit = budgetedImages
         memoryCache.delegate = counter
     }
 
@@ -110,6 +115,12 @@ public final class ThumbnailProvider: @unchecked Sendable {
 
         let decoded = decode(for: wallpaper)
         return finish(entry: entry, key: key, image: decoded)
+    }
+
+    /// The decoded image if it is already in memory, without generating or decoding
+    /// anything. Lets the picker paint a hit synchronously and defer only a miss.
+    public func cachedImage(for wallpaper: Wallpaper) -> CGImage? {
+        memoryCache.object(forKey: memoryKey(for: wallpaper) as NSString)
     }
 
     /// Decodes off the calling thread and delivers on the main queue.
@@ -146,13 +157,6 @@ public final class ThumbnailProvider: @unchecked Sendable {
         }
     }
 
-    /// Generates and caches the thumbnail for every wallpaper. Empty input is a no-op.
-    public func preload(_ wallpapers: [Wallpaper]) {
-        for wallpaper in wallpapers {
-            _ = image(for: wallpaper)
-        }
-    }
-
     public func clearMemoryCache() {
         memoryCache.removeAllObjects()
         counter.reset()
@@ -170,17 +174,11 @@ public final class ThumbnailProvider: @unchecked Sendable {
         cache.cacheURL(for: wallpaper).path
     }
 
-    /// Produces the on-disk thumbnail through the cache, then decodes that JPEG.
-    /// A missing source, a corrupt file, or a generation failure all collapse to nil.
+    /// Produces the thumbnail through the cache. A missing source, a corrupt file, or a
+    /// generation failure all collapse to nil. A generated image is handed back directly,
+    /// so the cache file is not decoded a second time just to display it.
     private func decode(for wallpaper: Wallpaper) -> CGImage? {
-        guard let url = try? cache.thumbnail(for: wallpaper) else {
-            return nil
-        }
-        guard let source = CGImageSourceCreateWithURL(url as CFURL, nil) else {
-            return nil
-        }
-        let options: [CFString: Any] = [kCGImageSourceShouldCacheImmediately: true]
-        return CGImageSourceCreateImageAtIndex(source, 0, options as CFDictionary)
+        try? cache.thumbnailImage(for: wallpaper)
     }
 
     /// Publishes the result: caches it, wakes synchronous waiters and dispatches
