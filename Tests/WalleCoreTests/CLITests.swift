@@ -386,4 +386,47 @@ struct CLITests {
                 .contains("none of 1 thumbnails cached at 512 px") == true)
         }
     }
+
+    @Test func spacesAllDryRunReportsWithoutWriting() throws {
+        try withTempDirectory { dir in
+            let store = dir.appendingPathComponent("Index.plist")
+            try makeStore(at: store)
+            let before = try Data(contentsOf: store)
+
+            let result = run(["spaces", "all", "--dry-run", "--json"], in: dir,
+                             environment: ["WALLE_WALLPAPER_STORE": store.path])
+            #expect(result.code == CLIExit.success.rawValue)
+            let object = try jsonObject(result.out)
+            #expect(object["dryRun"] as? Bool == true)
+            #expect(object["backup"] as? String == "")
+            #expect(try Data(contentsOf: store) == before)
+
+            let backup = store.deletingLastPathComponent()
+                .appendingPathComponent("Index.plist.walle-backup")
+            #expect(!FileManager.default.fileExists(atPath: backup.path))
+        }
+    }
+
+    @Test func spacesOnDryRunLeavesTheConfigAlone() throws {
+        try withTempDirectory { dir in
+            let paths = paths(in: dir)
+            try saveConfig(paths, dirs: [], spaces: .current)
+            let store = dir.appendingPathComponent("Index.plist")
+            try makeStore(at: store)
+
+            let result = run(["spaces", "on", "--dry-run"], in: dir,
+                             environment: ["WALLE_WALLPAPER_STORE": store.path])
+            #expect(result.code == CLIExit.success.rawValue)
+            #expect(result.out.contains("would"))
+            #expect(run(["config", "get", "spaces"], in: dir).out == "current")
+        }
+    }
+
+    @Test func spacesDryRunNeedsAnAction() {
+        withTempDirectory { dir in
+            let result = run(["spaces", "--dry-run"], in: dir)
+            #expect(result.code == CLIExit.failure.rawValue)
+            #expect(result.err.contains("--dry-run needs an action"))
+        }
+    }
 }

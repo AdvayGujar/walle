@@ -238,7 +238,7 @@ public struct CLI {
     static func spaces(_ tokens: [String], environment: CLIEnvironment) throws -> Int32 {
         let options = try OptionParser.parse(
             tokens,
-            spec: OptionSpec(boolOptions: ["json", "all", "prune", "help"],
+            spec: OptionSpec(boolOptions: ["json", "all", "prune", "dry-run", "help"],
                              shortAliases: ["j": "json", "h": "help"]))
         if options.has("help") { return help(environment) }
         let action = options.positionals.first
@@ -249,12 +249,31 @@ public struct CLI {
         if options.positionals.count > 1 {
             throw CLIError("spaces takes at most one argument")
         }
+        if options.has("dry-run"), action == nil, !options.has("all") {
+            throw CLIError("--dry-run needs an action: "
+                           + "'spaces all --dry-run' or 'spaces on --dry-run'")
+        }
 
         let (settings, _) = loadConfig(environment)
 
         // The toggle. "on" makes every future apply reach every Space; "off" restores the
         // ordinary macOS behaviour of changing only the desktop you are looking at.
         if action == "on" || action == "off" {
+            let url = WallpaperStore.indexURL(environment: environment.environment)
+            if options.has("dry-run") {
+                if action == "on" {
+                    environment.output.out("spaces on: would apply every wallpaper to every Space")
+                    // Show what turning it on would do now, without touching the config or store.
+                    let preview = try WallpaperStore.applyDefaultToAllSpaces(
+                        at: url,
+                        options: WallpaperStore.SyncOptions(
+                            liveSpaces: WallpaperStore.liveSpaceUUIDs(), dryRun: true))
+                    reportSync(preview, environment, dryRun: true)
+                } else {
+                    environment.output.out("spaces off: would only affect the Space you are on")
+                }
+                return CLIExit.success.rawValue
+            }
             let status = try config(["set", "spaces", action == "on" ? "all" : "current"],
                                     environment: environment)
             guard status == CLIExit.success.rawValue else { return status }
@@ -262,9 +281,10 @@ public struct CLI {
                 environment.output.out("spaces on: a wallpaper you pick will be applied to every Space")
                 // Bring the Spaces that already exist into line now, rather than waiting for
                 // the next apply to do it.
-                let url = WallpaperStore.indexURL(environment: environment.environment)
                 reportSync(try WallpaperStore.applyDefaultToAllSpaces(
-                    at: url, liveSpaces: WallpaperStore.liveSpaceUUIDs()), environment)
+                    at: url,
+                    options: WallpaperStore.SyncOptions(
+                        liveSpaces: WallpaperStore.liveSpaceUUIDs())), environment)
             } else {
                 environment.output.out("spaces off: a wallpaper you pick will only affect the Space you are on")
             }
@@ -276,8 +296,13 @@ public struct CLI {
         do {
             if options.has("all") || action == "all" {
                 let live = WallpaperStore.liveSpaceUUIDs()
+                let dryRun = options.has("dry-run")
                 let result = try WallpaperStore.applyDefaultToAllSpaces(
-                    at: url, liveSpaces: live, pruneStale: options.has("prune"))
+                    at: url,
+                    options: WallpaperStore.SyncOptions(
+                        liveSpaces: live,
+                        pruneStale: options.has("prune"),
+                        dryRun: dryRun))
                 if options.has("json") {
                     try emitJSON(["updated": result.updated,
                                   "created": result.created,
@@ -285,9 +310,10 @@ public struct CLI {
                                   "stale": result.stale,
                                   "pruned": result.pruned,
                                   "liveSpaces": live,
+                                  "dryRun": dryRun,
                                   "backup": result.backupPath ?? ""], to: environment)
                 } else {
-                    reportSync(result, environment)
+                    reportSync(result, environment, dryRun: dryRun)
                 }
                 return CLIExit.success.rawValue
             }
@@ -365,16 +391,24 @@ public struct CLI {
 
     /// Reports what a sync did, in the same words whether it came from "spaces on" or
     /// "spaces all".
-    static func reportSync(_ result: WallpaperStore.SyncResult, _ environment: CLIEnvironment) {
+    static func reportSync(_ result: WallpaperStore.SyncResult, _ environment: CLIEnvironment,
+                           dryRun: Bool = false) {
+        // The store's "" key is a real Space whose uuid is empty; printing it raw left a
+        // trailing blank in the report.
+        func label(_ key: String) -> String { key.isEmpty ? "(empty uuid)" : key }
+
         if !result.changedAnything {
             environment.output.out("every Space already shows the same wallpaper")
         } else {
-            for key in result.created { environment.output.out("added   Space " + key) }
-            for key in result.updated { environment.output.out("updated Space " + key) }
-            for key in result.pruned { environment.output.out("removed stale entry " + key) }
+            for key in result.created { environment.output.out("added   Space " + label(key)) }
+            for key in result.updated { environment.output.out("updated Space " + label(key)) }
+            for key in result.pruned { environment.output.out("removed stale entry " + label(key)) }
             if let backup = result.backupPath { environment.output.out("backup: " + backup) }
-            environment.output.out("WallpaperAgent restarted; switch Spaces to confirm")
+            if !dryRun {
+                environment.output.out("WallpaperAgent restarted; switch Spaces to confirm")
+            }
         }
+        if dryRun { environment.output.out("dry run: nothing was written") }
         if !result.stale.isEmpty && result.pruned.isEmpty {
             environment.output.out("note: \(result.stale.count) store entr"
                                    + (result.stale.count == 1 ? "y is" : "ies are")
@@ -430,6 +464,7 @@ public struct CLI {
           spaces off                 Only change the Space you are on (the default)
           spaces all                 Copy the current wallpaper onto every Space now
           spaces all --prune         Also drop entries for Spaces you have deleted
+          spaces all --dry-run       Show what a sync would change, write nothing
 
           macOS stores the desktop picture per Space, and its public API can only
           write the one you are looking at. These commands work around that.
@@ -749,6 +784,11 @@ public struct CLI {
         let errPipe = Pipe()
         process.standardOutput = outPipe
         process.standardError = errPipe
+        // Baseline the store before the child starts, so a system write that lands while it is
+        // open is detected immediately after it exits instead of being waited out for the full
+        // timeout. A timestamp taken after the exit cannot tell those cases apart.
+        let storeURL = WallpaperStore.indexURL(environment: environment.environment)
+        let storeBaseline = WallpaperStore.storeModificationDate(at: storeURL)
         try process.run()
         // Drain both pipes at once. Reading stdout to EOF first deadlocks if the child
         // fills stderr's 64 KiB buffer before it closes stdout, which a chatty picker
@@ -791,14 +831,14 @@ public struct CLI {
                 // macOS persists the apply asynchronously, and that write lands a beat after
                 // the picker exits. Wait for it (the store's mtime advancing) so our own sync
                 // write below is not overwritten by it — which reverted every other Space.
-                WallpaperStore.waitForStoreWrite(
-                    after: Date(),
-                    at: WallpaperStore.indexURL(environment: environment.environment))
+                WallpaperStore.waitForStoreWrite(at: storeURL, since: storeBaseline)
                 do {
                     let result = try WallpaperStore.applyDefaultToAllSpaces(
-                        at: WallpaperStore.indexURL(environment: environment.environment),
-                        liveSpaces: WallpaperStore.liveSpaceUUIDs(),
-                        sourcePath: appliedPath)
+                        at: storeURL,
+                        options: WallpaperStore.SyncOptions(
+                            liveSpaces: WallpaperStore.liveSpaceUUIDs(),
+                            sourcePath: appliedPath,
+                            settleForSystemWrite: false))
                     if settings.logLevel.showsStatus {
                         reportSync(result, environment)
                     }
