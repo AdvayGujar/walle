@@ -106,6 +106,7 @@ BIN_DIR="$(abs_path "$BIN_DIR")"
 CONFIG_HOME="${XDG_CONFIG_HOME:-$HOME/.config}"
 CONFIG_FILE="$CONFIG_HOME/walle/config"
 TARGET="$PREFIX/bin/walle"
+UPSCALER="$PREFIX/bin/walle-upscaler"
 LINK="$BIN_DIR/walle"
 
 echo "==> walle installer"
@@ -139,7 +140,8 @@ else
 fi
 
 # 2. Confirm the build staged what we are about to report as installed.
-if [ "$DRY_RUN" -eq 0 ] && { [ ! -x "$TARGET" ] || [ ! -d "$PREFIX/Walle.app" ]; }; then
+if [ "$DRY_RUN" -eq 0 ] && { [ ! -x "$TARGET" ] || [ ! -x "$UPSCALER" ] \
+        || [ ! -d "$PREFIX/Walle.app" ]; }; then
     echo "install.sh: build.sh did not stage a complete tree into $PREFIX" >&2
     exit 1
 fi
@@ -197,14 +199,16 @@ fi
 # 5. Report.
 if [ "$DRY_RUN" -eq 0 ]; then
     echo "==> Sizes"
-    echo "    Walle.app   $(du -sh "$PREFIX/Walle.app" | awk '{print $1}')"
-    echo "    walle CLI   $(du -sh "$PREFIX/bin/walle" | awk '{print $1}')"
+    echo "    Walle.app       $(du -sh "$PREFIX/Walle.app" | awk '{print $1}')"
+    echo "    walle CLI       $(du -sh "$PREFIX/bin/walle" | awk '{print $1}')"
+    echo "    ML backend     $(du -sh "$PREFIX/bin/walle-upscaler" | awk '{print $1}')"
 fi
 
 echo
 echo "==> Installed"
 echo "    app:     $PREFIX/Walle.app"
 echo "    CLI:     $PREFIX/bin/walle"
+echo "    ML:      $PREFIX/bin/walle-upscaler"
 
 # Everything below is end-user guidance for a hand install. A package manager
 # reports the same things through its own caveats, so keep it out of the way.

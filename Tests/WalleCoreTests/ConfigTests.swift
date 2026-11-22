@@ -169,6 +169,48 @@ struct ConfigTests {
         #expect(warnings.filter { $0.contains("clamped") }.count >= 3)
     }
 
+    @Test func rotationIntervalParsesNormalizesAndRoundTrips() {
+        var config = Config()
+        #expect(config.rotationInterval == "30m")
+
+        #expect(config.apply(key: "rotation_interval", value: "10m") == true)
+        #expect(config.rotationInterval == "10m")
+
+        // A malformed value leaves the previous setting alone, like every other key.
+        #expect(config.apply(key: "rotation_interval", value: "1.5m") == true)
+        #expect(config.rotationInterval == "10m")
+
+        config.rotationInterval = "bogus"
+        let (sanitized, warnings) = config.sanitized()
+        #expect(sanitized.rotationInterval == "30m")
+        #expect(warnings.contains { $0.contains("rotation_interval") })
+
+        #expect(Config.parse("rotation_interval = 2h\n").config.rotationInterval == "2h")
+    }
+
+    @Test func upscaleToggleAndBackendKeysRoundTrip() {
+        var config = Config()
+        #expect(config.upscale == false)
+        #expect(config.upscaleModel == "realesrgan-x4plus")
+        #expect(config.upscaleCommand == "walle-upscaler")
+
+        #expect(config.apply(key: "upscale", value: "on") == true)
+        #expect(config.upscale == true)
+        #expect(config.apply(key: "upscale_model", value: "4xLSDIR") == true)
+        #expect(config.upscaleModel == "4xLSDIR")
+        #expect(config.apply(key: "upscale_models", value: "~/models") == true)
+        #expect(config.upscaleModels == "~/models")
+        #expect(config.apply(key: "upscale_tool", value: "/tmp/upscayl-bin") == true)
+        #expect(config.upscaleTool == "/tmp/upscayl-bin")
+
+        let (parsed, warnings) = Config.parse(config.serialized())
+        #expect(warnings.isEmpty)
+        #expect(parsed.upscale == true)
+        #expect(parsed.upscaleModel == "4xLSDIR")
+        #expect(parsed.upscaleModels == "~/models")
+        #expect(parsed.upscaleTool == "/tmp/upscayl-bin")
+    }
+
     @Test func sanitizedWarnsAboutEmptyWallpaperDirs() {
         let (_, warnings) = Config(wallpaperDirs: []).sanitized()
         #expect(warnings.contains { $0.contains("wallpaper_dirs") && $0.contains("empty") })
@@ -286,8 +328,8 @@ struct ConfigTests {
         }
     }
 
-    @Test func loadFromMissingFileReturnsDefaultsQuietly() throws {
-        try withTempDirectory { dir in
+    @Test func loadFromMissingFileReturnsDefaultsQuietly() {
+        withTempDirectory { dir in
             let (config, warnings) = Config.load(from: dir.appendingPathComponent("missing"))
             #expect(config == Config())
             #expect(warnings.isEmpty)

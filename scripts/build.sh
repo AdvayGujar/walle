@@ -17,7 +17,9 @@
 #   Either way the resulting tree is the same:
 #       PREFIX/bin/walle                            the CLI
 #       PREFIX/bin/walle-picker -> ../Walle.app/... the picker, on PATH too
+#       PREFIX/bin/walle-upscaler                   the replaceable ML backend
 #       PREFIX/Walle.app/Contents/MacOS/walle-picker
+#       PREFIX/Walle.app/Contents/MacOS/walle-upscaler
 #       PREFIX/Walle.app/Contents/Info.plist
 #
 # The version comes from Sources/WalleCore/WalleVersion.swift unless --version
@@ -93,7 +95,7 @@ RELEASE_BIN="$SCRATCH/release"
 echo "==> Building walle $VERSION (scripts/swift.sh build -c release)"
 ./scripts/swift.sh build -c release
 
-for tool in walle walle-picker; do
+for tool in walle walle-picker walle-upscaler; do
     if [ ! -x "$RELEASE_BIN/$tool" ]; then
         echo "build.sh: expected executable $RELEASE_BIN/$tool after the build" >&2
         exit 1
@@ -110,8 +112,11 @@ rm -rf "$DIST"
 mkdir -p "$MACOS" "$DIST/bin"
 
 cp "$RELEASE_BIN/walle-picker" "$MACOS/walle-picker"
+cp "$RELEASE_BIN/walle-upscaler" "$MACOS/walle-upscaler"
 cp "$RELEASE_BIN/walle" "$DIST/bin/walle"
-chmod +x "$MACOS/walle-picker" "$DIST/bin/walle"
+cp "$RELEASE_BIN/walle-upscaler" "$DIST/bin/walle-upscaler"
+chmod +x "$MACOS/walle-picker" "$MACOS/walle-upscaler" \
+    "$DIST/bin/walle" "$DIST/bin/walle-upscaler"
 
 # A dist/bin/walle-picker sibling, as a relative link, so the tree works from
 # anywhere and survives being copied into a keg. The CLI itself finds the picker
@@ -152,14 +157,18 @@ printf 'APPL????' > "$CONTENTS/PkgInfo"
 
 echo "==> Stripping binaries (xcrun strip -x)"
 xcrun strip -x "$MACOS/walle-picker"
+xcrun strip -x "$MACOS/walle-upscaler"
 xcrun strip -x "$DIST/bin/walle"
+xcrun strip -x "$DIST/bin/walle-upscaler"
 
 echo "==> Verifying"
 status=0
 [ -d "$APP" ] || { echo "build.sh: missing $APP" >&2; status=1; }
 [ -x "$MACOS/walle-picker" ] || { echo "build.sh: $MACOS/walle-picker is not executable" >&2; status=1; }
+[ -x "$MACOS/walle-upscaler" ] || { echo "build.sh: $MACOS/walle-upscaler is not executable" >&2; status=1; }
 [ -x "$DIST/bin/walle" ] || { echo "build.sh: $DIST/bin/walle is not executable" >&2; status=1; }
 [ -x "$DIST/bin/walle-picker" ] || { echo "build.sh: $DIST/bin/walle-picker is not executable" >&2; status=1; }
+[ -x "$DIST/bin/walle-upscaler" ] || { echo "build.sh: $DIST/bin/walle-upscaler is not executable" >&2; status=1; }
 plutil -lint "$CONTENTS/Info.plist" || status=1
 if [ "$status" -ne 0 ]; then
     echo "build.sh: verification failed" >&2
@@ -186,9 +195,12 @@ if [ -n "$PREFIX" ]; then
     mkdir -p "$PREFIX/bin"
     rm -rf "$PREFIX/$APP_NAME.app"
     cp -R "$APP" "$PREFIX/$APP_NAME.app"
-    rm -f "$PREFIX/bin/walle" "$PREFIX/bin/walle-picker"
+    rm -f "$PREFIX/bin/walle" "$PREFIX/bin/walle-picker" "$PREFIX/bin/walle-upscaler"
     cp "$DIST/bin/walle" "$PREFIX/bin/walle"
-    chmod +x "$PREFIX/bin/walle" "$PREFIX/$APP_NAME.app/Contents/MacOS/walle-picker"
+    cp "$DIST/bin/walle-upscaler" "$PREFIX/bin/walle-upscaler"
+    chmod +x "$PREFIX/bin/walle" "$PREFIX/bin/walle-upscaler" \
+        "$PREFIX/$APP_NAME.app/Contents/MacOS/walle-picker" \
+        "$PREFIX/$APP_NAME.app/Contents/MacOS/walle-upscaler"
     # Relative link, so the keg can be relocated without rewriting it.
     ln -sfn "../$APP_NAME.app/Contents/MacOS/walle-picker" "$PREFIX/bin/walle-picker"
 
@@ -204,7 +216,9 @@ byte_size() { stat -f%z "$1"; }
 
 echo "==> Sizes"
 echo "    dist/bin/walle              $(human_size "$DIST/bin/walle")  ($(byte_size "$DIST/bin/walle") bytes)"
+echo "    dist/bin/walle-upscaler     $(human_size "$DIST/bin/walle-upscaler")  ($(byte_size "$DIST/bin/walle-upscaler") bytes)"
 echo "    Walle.app picker            $(human_size "$MACOS/walle-picker")  ($(byte_size "$MACOS/walle-picker") bytes)"
+echo "    Walle.app upscaler          $(human_size "$MACOS/walle-upscaler")  ($(byte_size "$MACOS/walle-upscaler") bytes)"
 echo "    Walle.app bundle            $(human_size "$APP")"
 if [ -n "$PREFIX" ]; then
     echo "    staged prefix               $PREFIX"

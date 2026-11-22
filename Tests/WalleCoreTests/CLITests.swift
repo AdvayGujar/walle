@@ -113,6 +113,82 @@ struct CLITests {
                                               ofItemAtPath: url.path)
     }
 
+    /// A picker stand-in that records the arguments it was called with.
+    private func makeRecordingPicker(at url: URL) throws -> URL {
+        let log = url.deletingLastPathComponent().appendingPathComponent("picker-args.log")
+        let script = """
+        #!/bin/sh
+        for argument in "$@"; do
+            echo "$argument"
+        done >> "\(log.path)"
+        exit 0
+        """
+        try Data(script.utf8).write(to: url)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755],
+                                              ofItemAtPath: url.path)
+        return log
+    }
+
+    /// A picker stand-in that answers --display-info with a fixed screen.
+    private func makeDisplayPicker(at url: URL, width: Int, height: Int) throws {
+        let script = """
+        #!/bin/sh
+        if [ "$1" = "--display-info" ]; then
+            echo '{"screens":[{"pixelWidth":\(width),"pixelHeight":\(height),"active":true}]}'
+            exit 0
+        fi
+        exit 0
+        """
+        try Data(script.utf8).write(to: url)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755],
+                                              ofItemAtPath: url.path)
+    }
+
+    /// A fake replaceable upscaler: copies a small HEIC fixture to every output
+    /// and writes the result JSON the real module would write.
+    private func makeFakeUpscaler(in directory: URL) throws -> URL {
+        let fixture = directory.appendingPathComponent("fake-output.heic")
+        try makeTestHEIC(at: fixture, width: 8, height: 8)
+        let script = directory.appendingPathComponent("fake-upscaler")
+        let text = """
+        #!/bin/sh
+        job=""
+        result=""
+        while [ $# -gt 0 ]; do
+            case "$1" in
+                --job) job="$2"; shift 2 ;;
+                --result) result="$2"; shift 2 ;;
+                *) shift ;;
+            esac
+        done
+        /usr/bin/python3 - "$job" "$result" "\(fixture.path)" <<'PY'
+        import json, shutil, sys
+        job = json.load(open(sys.argv[1]))
+        results = []
+        for item in job["jobs"]:
+            shutil.copyfile(sys.argv[3], item["output"])
+            results.append({
+                "source": item["source"],
+                "output": item["output"],
+                "status": "ok",
+                "width": 8,
+                "height": 8,
+            })
+        json.dump({"schema": 1, "results": results}, open(sys.argv[2], "w"))
+        PY
+        """
+        try Data(text.utf8).write(to: script)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755],
+                                              ofItemAtPath: script.path)
+        return script
+    }
+
+    /// The scanner's canonical paths, not the test's possibly symlinked ones.
+    private func scannedWallpapers(_ config: Config, home: URL) -> [Wallpaper] {
+        LibraryScanner(config: config, home: home)
+            .scan(includeAspectRatio: false).wallpapers
+    }
+
     // MARK: - Top-level commands
 
     @Test func versionPrintsTheVersion() {
@@ -280,6 +356,476 @@ struct CLITests {
             let result = run(["set", "--next", "--dry-run"], in: dir)
             #expect(result.code == CLIExit.success.rawValue)
             #expect(result.out.hasSuffix("a.png"))
+        }
+    }
+
+    // MARK: - Rotation
+
+    @Test func rotateOnceDryRunStartsFromTheLastAppliedWallpaper() throws {
+        try withTempDirectory { dir in
+            let library = dir.appendingPathComponent("walls").standardizedFileURL
+            try makeLibrary(library, files: ["c.png", "a.png", "b.png"])
+            let paths = paths(in: dir)
+            let config = try saveConfig(paths, dirs: [library.path])
+            let scanned = scannedWallpapers(config, home: dir)
+            let first = try #require(scanned.first { $0.name == "a.png" })
+            let second = try #require(scanned.first { $0.name == "b.png" })
+
+            // No state yet: rotation starts at the beginning of the sort order.
+            let initial = run(["rotate", "--once", "--dry-run"], in: dir)
+            #expect(initial.code == CLIExit.success.rawValue)
+            #expect(initial.out == first.path)
+
+            // The picker applied b.png; the next rotation must advance from there.
+            try StateStore(fileURL: paths.stateFile)
+                .save(WalleState(lastAppliedPath: second.path))
+            let continued = run(["rotate", "--once", "--dry-run"], in: dir)
+            #expect(continued.code == CLIExit.success.rawValue)
+            #expect(continued.out.hasSuffix("c.png"))
+        }
+    }
+
+    @Test func rotateOnceAppliesThroughThePickerWithRotateMode() throws {
+        try withTempDirectory { dir in
+            let library = dir.appendingPathComponent("walls").standardizedFileURL
+            try makeLibrary(library, files: ["a.png", "b.png"])
+            let paths = paths(in: dir)
+            let config = try saveConfig(paths, dirs: [library.path], logLevel: .warn)
+            let scanned = scannedWallpapers(config, home: dir)
+            let expected = try #require(scanned.first { $0.name == "a.png" })
+
+            let picker = dir.appendingPathComponent("picker.sh")
+            let log = try makeRecordingPicker(at: picker)
+
+            let result = run(["rotate", "--once"], in: dir,
+                             environment: ["WALLE_PICKER": picker.path])
+            #expect(result.code == CLIExit.success.rawValue)
+            #expect(result.out.contains("rotated to " + expected.path))
+
+            let arguments = try String(contentsOf: log, encoding: .utf8)
+            #expect(arguments.contains("--apply"))
+            #expect(arguments.contains(expected.path))
+            #expect(arguments.contains("--mode\nrotate"))
+        }
+    }
+
+    @Test func rotateSkipsWhileThePickerIsOpen() throws {
+        try withTempDirectory { dir in
+            let library = dir.appendingPathComponent("walls").standardizedFileURL
+            try makeLibrary(library, files: ["a.png", "b.png"])
+            let paths = paths(in: dir)
+            try saveConfig(paths, dirs: [library.path])
+
+            let lock = try #require(SingleInstance.acquire(at: paths.lockFile))
+            defer { SingleInstance.release(lock) }
+
+            let result = run(["rotate", "--once", "--dry-run"], in: dir)
+            #expect(result.code == CLIExit.success.rawValue)
+            #expect(result.out.isEmpty)
+        }
+    }
+
+    @Test func rotateRefusesASecondLoopAndReleasesItsLock() throws {
+        try withTempDirectory { dir in
+            let paths = paths(in: dir)
+            let lock = try #require(SingleInstance.acquire(at: paths.rotationLockFile))
+            defer { SingleInstance.release(lock) }
+
+            let blocked = run(["rotate", "--once"], in: dir)
+            #expect(blocked.code == CLIExit.alreadyRunning.rawValue)
+            #expect(blocked.err.contains("another rotation is already running"))
+        }
+
+        try withTempDirectory { dir in
+            let library = dir.appendingPathComponent("walls").standardizedFileURL
+            try makeLibrary(library, files: ["a.png"])
+            let paths = paths(in: dir)
+            try saveConfig(paths, dirs: [library.path])
+            let picker = dir.appendingPathComponent("picker.sh")
+            _ = try makeRecordingPicker(at: picker)
+
+            let result = run(["rotate", "--once"], in: dir,
+                             environment: ["WALLE_PICKER": picker.path])
+            #expect(result.code == CLIExit.success.rawValue)
+            #expect(SingleInstance.isHeld(at: paths.rotationLockFile) == false)
+        }
+    }
+
+    @Test func rotateRejectsBadIntervalsAndEmptyLibraries() {
+        withTempDirectory { dir in
+            let invalid = run(["rotate", "1.5m", "--once", "--dry-run"], in: dir)
+            #expect(invalid.code == CLIExit.failure.rawValue)
+            #expect(invalid.err.contains("expects a duration"))
+
+            let both = run(["rotate", "10m", "--interval", "5m", "--once"], in: dir)
+            #expect(both.code == CLIExit.failure.rawValue)
+            #expect(both.err.contains("not both"))
+
+            let empty = run(["rotate", "--once", "--dry-run"], in: dir)
+            #expect(empty.code == CLIExit.failure.rawValue)
+            #expect(empty.err.contains("library is empty"))
+        }
+    }
+
+    @Test func rotateJSONReportsTheChosenWallpaper() throws {
+        try withTempDirectory { dir in
+            let library = dir.appendingPathComponent("walls").standardizedFileURL
+            try makeLibrary(library, files: ["a.png"])
+            let paths = paths(in: dir)
+            let config = try saveConfig(paths, dirs: [library.path])
+            let wallpaper = try #require(scannedWallpapers(config, home: dir).first)
+
+            let result = run(["rotate", "--once", "--dry-run", "--json"], in: dir)
+            let object = try jsonObject(result.out)
+            #expect(object["wouldApply"] as? String == wallpaper.path)
+            #expect(object["interval"] as? String == "30m")
+
+            let override = run(["rotate", "--interval", "10m", "--once", "--dry-run", "--json"],
+                               in: dir)
+            #expect(try jsonObject(override.out)["interval"] as? String == "10m")
+        }
+    }
+
+    // MARK: - Upscaling
+
+    @Test func upscaleDryRunWritesNothing() throws {
+        try withTempDirectory { dir in
+            let source = dir.appendingPathComponent("source.png")
+            try makeTestPNG(at: source, width: 4, height: 4)
+            let fake = try makeFakeUpscaler(in: dir)
+            let output = dir.appendingPathComponent("upscaled")
+
+            let result = run(["upscale", source.path, "--target", "8x8",
+                              "--output", output.path, "--upscaler", fake.path,
+                              "--dry-run", "--json"], in: dir)
+            #expect(result.code == CLIExit.success.rawValue)
+            let object = try jsonObject(result.out)
+            #expect(object["dryRun"] as? Bool == true)
+            #expect(object["generated"] as? Int == 1)
+            #expect(object["target"] as? String == "8x8")
+            #expect(object["format"] as? String == "heic")
+            #expect(object["model"] as? String == "realesrgan-x4plus")
+            let files = try #require(object["files"] as? [[String: Any]])
+            #expect(files[0]["width"] as? Int == 8)
+            #expect(files[0]["height"] as? Int == 8)
+            #expect(!FileManager.default.fileExists(atPath: output.path))
+        }
+    }
+
+    @Test func upscaleGeneratesSkipsAndForceRegenerates() throws {
+        try withTempDirectory { dir in
+            let source = dir.appendingPathComponent("source.png")
+            try makeTestPNG(at: source, width: 4, height: 4)
+            let fake = try makeFakeUpscaler(in: dir)
+            let output = dir.appendingPathComponent("upscaled")
+
+            let first = run(["upscale", source.path, "--target", "8x8",
+                             "--output", output.path, "--upscaler", fake.path], in: dir)
+            #expect(first.code == CLIExit.success.rawValue)
+            #expect(first.out.contains("1 generated, 0 skipped, 0 failed"))
+            let rendered = output.appendingPathComponent("source.heic")
+            #expect(FileManager.default.fileExists(atPath: rendered.path))
+            #expect(FileManager.default.fileExists(
+                atPath: output.appendingPathComponent("manifest.json").path))
+            let written = try UpscaleInspector.inspect(rendered)
+            #expect(written.width == 8)
+            #expect(written.height == 8)
+
+            let second = run(["upscale", source.path, "--target", "8x8",
+                              "--output", output.path, "--upscaler", fake.path], in: dir)
+            #expect(second.code == CLIExit.success.rawValue)
+            #expect(second.out.contains("0 generated, 1 skipped, 0 failed"))
+
+            let forced = run(["upscale", source.path, "--target", "8x8",
+                              "--output", output.path, "--upscaler", fake.path,
+                              "--force"], in: dir)
+            #expect(forced.code == CLIExit.success.rawValue)
+            #expect(forced.out.contains("1 generated, 0 skipped, 0 failed"))
+        }
+    }
+
+    @Test func upscaleAllScansTheConfiguredLibrary() throws {
+        try withTempDirectory { dir in
+            let library = dir.appendingPathComponent("walls").standardizedFileURL
+            try makeLibrary(library, files: ["a.png", "b.png"])
+            try makeTestPNG(at: library.appendingPathComponent("a.png"),
+                            width: 4, height: 4)
+            try makeTestPNG(at: library.appendingPathComponent("b.png"),
+                            width: 4, height: 4)
+            let paths = paths(in: dir)
+            try saveConfig(paths, dirs: [library.path])
+            let fake = try makeFakeUpscaler(in: dir)
+            let output = dir.appendingPathComponent("upscaled")
+
+            let result = run(["upscale", "--all", "--target", "8x8",
+                              "--output", output.path, "--upscaler", fake.path,
+                              "--json"], in: dir)
+            #expect(result.code == CLIExit.success.rawValue)
+            let object = try jsonObject(result.out)
+            #expect(object["generated"] as? Int == 2)
+            #expect(object["skipped"] as? Int == 0)
+        }
+    }
+
+    @Test func upscaleDirAndMaxScaleAreRespected() throws {
+        try withTempDirectory { dir in
+            let library = dir.appendingPathComponent("walls").standardizedFileURL
+            try FileManager.default.createDirectory(at: library, withIntermediateDirectories: true)
+            try makeTestPNG(at: library.appendingPathComponent("small.png"),
+                            width: 4, height: 4)
+            let fake = try makeFakeUpscaler(in: dir)
+            let output = dir.appendingPathComponent("upscaled")
+
+            let result = run(["upscale", "--dir", library.path, "--target", "8x8",
+                              "--max-scale", "1.5", "--output", output.path,
+                              "--upscaler", fake.path, "--json"], in: dir)
+            #expect(result.code == CLIExit.success.rawValue)
+            let object = try jsonObject(result.out)
+            #expect(object["generated"] as? Int == 0)
+            #expect(object["skipped"] as? Int == 1)
+            let files = try #require(object["files"] as? [[String: Any]])
+            #expect((files[0]["reason"] as? String)?.contains("--max-scale") == true)
+        }
+    }
+
+    @Test func upscaleSkipsTransparentSources() throws {
+        try withTempDirectory { dir in
+            let source = dir.appendingPathComponent("alpha.png")
+            try makeTestPNG(at: source, width: 4, height: 4, opaque: false)
+            let fake = try makeFakeUpscaler(in: dir)
+            let output = dir.appendingPathComponent("upscaled")
+
+            let result = run(["upscale", source.path, "--target", "8x8",
+                              "--output", output.path, "--upscaler", fake.path,
+                              "--json"], in: dir)
+            #expect(result.code == CLIExit.success.rawValue)
+            let object = try jsonObject(result.out)
+            #expect(object["generated"] as? Int == 0)
+            #expect(object["skipped"] as? Int == 1)
+            let files = try #require(object["files"] as? [[String: Any]])
+            #expect((files[0]["reason"] as? String)?.contains("transparent") == true)
+        }
+    }
+
+    @Test func upscaleDisplayTargetAsksThePicker() throws {
+        try withTempDirectory { dir in
+            let source = dir.appendingPathComponent("source.png")
+            try makeTestPNG(at: source, width: 4, height: 4)
+            let picker = dir.appendingPathComponent("picker.sh")
+            try makeDisplayPicker(at: picker, width: 10, height: 6)
+            let fake = try makeFakeUpscaler(in: dir)
+            let output = dir.appendingPathComponent("upscaled")
+
+            let result = run(["upscale", source.path, "--output", output.path,
+                              "--upscaler", fake.path, "--dry-run", "--json"], in: dir,
+                             environment: ["WALLE_PICKER": picker.path])
+            #expect(result.code == CLIExit.success.rawValue)
+            let object = try jsonObject(result.out)
+            #expect(object["target"] as? String == "10x6")
+            let files = try #require(object["files"] as? [[String: Any]])
+            #expect(files[0]["width"] as? Int == 12)
+            #expect(files[0]["height"] as? Int == 12)
+        }
+    }
+
+    @Test func upscaleRejectsBadOptionsAndDirectories() throws {
+        try withTempDirectory { dir in
+            let noInput = run(["upscale"], in: dir)
+            #expect(noInput.code == CLIExit.failure.rawValue)
+            #expect(noInput.err.contains("needs file paths"))
+
+            let source = dir.appendingPathComponent("source.png")
+            try makeTestPNG(at: source, width: 4, height: 4)
+            let fake = try makeFakeUpscaler(in: dir)
+            for arguments in [
+                ["upscale", source.path, "--target", "nope"],
+                ["upscale", source.path, "--mode", "nope"],
+                ["upscale", source.path, "--quality", "2"],
+                ["upscale", source.path, "--max-scale", "1"],
+                ["upscale", source.path, "--scale", "5"],
+            ] {
+                let result = run(arguments, in: dir)
+                #expect(result.code == CLIExit.failure.rawValue, "\(arguments) should fail")
+            }
+
+            let directory = run(["upscale", dir.path, "--target", "8x8",
+                                 "--upscaler", fake.path], in: dir)
+            #expect(directory.code == CLIExit.failure.rawValue)
+            #expect(directory.err.contains("use --dir"))
+        }
+    }
+
+    @Test func upscaleDisambiguatesCollidingOutputNames() throws {
+        try withTempDirectory { dir in
+            let first = dir.appendingPathComponent("one").standardizedFileURL
+            let second = dir.appendingPathComponent("two").standardizedFileURL
+            try FileManager.default.createDirectory(at: first, withIntermediateDirectories: true)
+            try FileManager.default.createDirectory(at: second, withIntermediateDirectories: true)
+            try makeTestPNG(at: first.appendingPathComponent("same.png"),
+                            width: 4, height: 4)
+            try makeTestPNG(at: second.appendingPathComponent("same.png"),
+                            width: 4, height: 4)
+            let fake = try makeFakeUpscaler(in: dir)
+            let output = dir.appendingPathComponent("upscaled")
+
+            let result = run(["upscale", "--dir", first.path, "--dir", second.path,
+                              "--target", "8x8", "--output", output.path,
+                              "--upscaler", fake.path, "--json"], in: dir)
+            #expect(result.code == CLIExit.success.rawValue)
+            let object = try jsonObject(result.out)
+            #expect(object["generated"] as? Int == 2)
+            let files = try #require(object["files"] as? [[String: Any]])
+            let names = Set(files.compactMap { ($0["output"] as? String).map {
+                URL(fileURLWithPath: $0).lastPathComponent
+            } })
+            #expect(names.count == 2)
+            #expect(names.contains("same.heic"))
+            #expect(names.contains { $0.hasPrefix("same-") && $0.hasSuffix(".heic") })
+        }
+    }
+
+    @Test func upscaleRefusesASecondRun() throws {
+        try withTempDirectory { dir in
+            let source = dir.appendingPathComponent("source.png")
+            try makeTestPNG(at: source, width: 4, height: 4)
+            let fake = try makeFakeUpscaler(in: dir)
+            let paths = paths(in: dir)
+            let lock = try #require(SingleInstance.acquire(at: paths.upscaleLockFile))
+            defer { SingleInstance.release(lock) }
+
+            let result = run(["upscale", source.path, "--target", "8x8",
+                              "--output", dir.appendingPathComponent("out").path,
+                              "--upscaler", fake.path], in: dir)
+            #expect(result.code == CLIExit.alreadyRunning.rawValue)
+            #expect(result.err.contains("another upscale is already running"))
+        }
+    }
+
+
+    @Test func upscaleOnFillsHiddenCacheAndOffUsesOriginals() throws {
+        try withTempDirectory { dir in
+            let library = dir.appendingPathComponent("walls").standardizedFileURL
+            try makeLibrary(library, files: ["source.png"])
+            try makeTestPNG(at: library.appendingPathComponent("source.png"),
+                            width: 4, height: 4)
+            let paths = paths(in: dir)
+            try saveConfig(paths, dirs: [library.path])
+            let fake = try makeFakeUpscaler(in: dir)
+
+            let on = run(["upscale", "on", "--wait", "--target", "8x8",
+                          "--upscaler", fake.path], in: dir)
+            #expect(on.code == CLIExit.success.rawValue)
+            #expect(run(["config", "get", "upscale"], in: dir).out == "true")
+            let root = UpscaleCache.root(paths: paths, model: "realesrgan-x4plus",
+                                         target: PixelSize(width: 8, height: 8))
+            let first = try FileManager.default.contentsOfDirectory(
+                at: root, includingPropertiesForKeys: nil)
+                .filter { $0.pathExtension == "heic" }
+            #expect(first.count == 1)
+
+            // A new image is picked up by the refresh path without changing config.
+            try makeTestPNG(at: library.appendingPathComponent("new.png"),
+                            width: 4, height: 4)
+            let refresh = run(["upscale", "--refresh", "--target", "8x8",
+                               "--upscaler", fake.path], in: dir)
+            #expect(refresh.code == CLIExit.success.rawValue)
+            let second = try FileManager.default.contentsOfDirectory(
+                at: root, includingPropertiesForKeys: nil)
+                .filter { $0.pathExtension == "heic" }
+            #expect(second.count == 2)
+
+            let off = run(["upscale", "off"], in: dir)
+            #expect(off.code == CLIExit.success.rawValue)
+            #expect(run(["config", "get", "upscale"], in: dir).out == "false")
+            #expect(FileManager.default.fileExists(atPath: root.path))
+        }
+    }
+
+    @Test func upscaleOnStartsADetachedRefresh() throws {
+        try withTempDirectory { dir in
+            let library = dir.appendingPathComponent("walls").standardizedFileURL
+            try makeLibrary(library, files: ["source.png"])
+            try makeTestPNG(at: library.appendingPathComponent("source.png"),
+                            width: 4, height: 4)
+            let paths = paths(in: dir)
+            try saveConfig(paths, dirs: [library.path])
+            let fake = try makeFakeUpscaler(in: dir)
+            let fakeCLI = dir.appendingPathComponent("fake-cli")
+            let log = dir.appendingPathComponent("fake-cli.log")
+            try Data("""
+            #!/bin/sh
+            printf '%s\\n' "$@" >> "\(log.path)"
+            """.utf8).write(to: fakeCLI)
+            try FileManager.default.setAttributes([.posixPermissions: 0o755],
+                                                  ofItemAtPath: fakeCLI.path)
+
+            let result = run(["upscale", "on", "--target", "8x8",
+                              "--upscaler", fake.path], in: dir,
+                             environment: ["WALLE_CLI": fakeCLI.path])
+            #expect(result.code == CLIExit.success.rawValue)
+            #expect(result.out.contains("caching in the background"))
+            #expect(run(["config", "get", "upscale"], in: dir).out == "true")
+
+            // The child is detached; give it up to a few seconds under test load.
+            let deadline = Date().addingTimeInterval(3)
+            while !FileManager.default.fileExists(atPath: log.path), Date() < deadline {
+                Thread.sleep(forTimeInterval: 0.05)
+            }
+            let arguments = try String(contentsOf: log, encoding: .utf8)
+            #expect(arguments.contains("upscale"))
+            #expect(arguments.contains("--refresh"))
+            #expect(arguments.contains("--target"))
+            #expect(arguments.contains("8x8"))
+        }
+    }
+
+    @Test func dirAddStartsBackgroundRefreshWhenUpscaleIsOn() throws {
+        try withTempDirectory { dir in
+            let paths = paths(in: dir)
+            var config = Config()
+            config.wallpaperDirs = [dir.appendingPathComponent("old").path]
+            config.upscale = true
+            try config.save(to: paths.configFile)
+            let fakeCLI = dir.appendingPathComponent("fake-cli")
+            let log = dir.appendingPathComponent("fake-cli.log")
+            try Data("""
+            #!/bin/sh
+            printf '%s\\n' "$@" >> "\(log.path)"
+            """.utf8).write(to: fakeCLI)
+            try FileManager.default.setAttributes([.posixPermissions: 0o755],
+                                                  ofItemAtPath: fakeCLI.path)
+
+            let result = run(["dir", "add", dir.appendingPathComponent("new").path],
+                             in: dir, environment: ["WALLE_CLI": fakeCLI.path])
+            #expect(result.code == CLIExit.success.rawValue)
+            #expect(result.err.contains("background"))
+            let deadline = Date().addingTimeInterval(3)
+            while !FileManager.default.fileExists(atPath: log.path), Date() < deadline {
+                Thread.sleep(forTimeInterval: 0.05)
+            }
+            let arguments = try String(contentsOf: log, encoding: .utf8)
+            #expect(arguments.contains("upscale"))
+            #expect(arguments.contains("--refresh"))
+        }
+    }
+
+    @Test func upscaleOnDryRunChangesNothing() throws {
+        try withTempDirectory { dir in
+            let library = dir.appendingPathComponent("walls").standardizedFileURL
+            try makeLibrary(library, files: ["source.png"])
+            try makeTestPNG(at: library.appendingPathComponent("source.png"),
+                            width: 4, height: 4)
+            let paths = paths(in: dir)
+            try saveConfig(paths, dirs: [library.path])
+            let fake = try makeFakeUpscaler(in: dir)
+
+            let result = run(["upscale", "on", "--target", "8x8",
+                              "--upscaler", fake.path, "--dry-run", "--json"],
+                             in: dir)
+            #expect(result.code == CLIExit.success.rawValue)
+            #expect(run(["config", "get", "upscale"], in: dir).out == "false")
+            #expect(!FileManager.default.fileExists(
+                atPath: paths.dataDir.appendingPathComponent("upscaled").path))
         }
     }
 

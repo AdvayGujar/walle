@@ -76,15 +76,25 @@ Sources/WalleCore/     Foundation only, no AppKit, fully unit tested
   Carousel.swift       rotation slot arithmetic
   Library.swift        directory scan, sorting, aspect ratios
   Queue.swift          circular index arithmetic
+  Rotation.swift       rotation interval parsing
+  Upscaling.swift      target sizing and source inspection for ML upscaling
+  UpscaleJob.swift     job/result contract for the replaceable ML backend
+  UpscaleManifest.swift  records ML copies for reruns
+  UpscaleCache.swift   hidden automatic cache, refresh and source pruning
+  UpscalerLocator.swift  finds the replaceable walle-upscaler executable
+  CLILocator.swift     lets the picker start a cache refresh
   Thumbnails.swift     ImageIO thumbnails and the on-disk cache
   ThumbnailProvider.swift  decoded images, in-flight coalescing, async loading
   History.swift        apply history and picker state
   WallpaperStore.swift per-Space store (M7)
   CLI.swift            the command line surface
 Sources/WalleKit/      AppKit: window, cards, corridor, the real setDesktopImageURL
+Sources/WalleUpscalerCore/  default ML backend: upscayl-bin batching + HEIC
 Sources/walle/         CLI executable
 Sources/walle-picker/  GUI executable (also has headless modes)
-Tests/WalleCoreTests/  152 tests in 14 suites
+Sources/walle-upscaler/  replaceable ML backend executable
+Tests/WalleCoreTests/  188 tests in 16 suites
+Tests/WalleUpscalerCoreTests/  5 tests in 1 suite
 scripts/               swift.sh, build.sh, install.sh, uninstall.sh, clean.sh
 tools/                 offscreen geometry diagnostics
 ```

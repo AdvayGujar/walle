@@ -49,9 +49,23 @@ public struct WallePaths: Sendable, Equatable {
     }
 
     public var thumbnailsDir: URL { cacheDir.appendingPathComponent("thumbs") }
+    public var upscaledDir: URL { dataDir.appendingPathComponent("upscaled") }
+    /// Optional local home for the default ML backend and its models.
+    public var upscalerDir: URL { dataDir.appendingPathComponent("upscaler") }
+    /// Log for the background cache refresh started when the picker opens.
+    public var upscaleRefreshLog: URL {
+        dataDir.appendingPathComponent("upscaled/cache/refresh.log")
+    }
+    /// Set when a change arrives while a fill is already running; the running
+    /// fill starts one more pass at the end.
+    public var upscalePendingRefresh: URL {
+        dataDir.appendingPathComponent("upscaled/cache/refresh.pending")
+    }
     public var historyFile: URL { dataDir.appendingPathComponent("history.jsonl") }
     public var stateFile: URL { dataDir.appendingPathComponent("state.json") }
     public var lockFile: URL { dataDir.appendingPathComponent("picker.lock") }
+    public var rotationLockFile: URL { dataDir.appendingPathComponent("rotation.lock") }
+    public var upscaleLockFile: URL { dataDir.appendingPathComponent("upscale.lock") }
 }
 
 /// Expands a leading tilde and leaves everything else alone.

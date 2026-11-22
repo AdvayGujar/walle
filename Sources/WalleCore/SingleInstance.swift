@@ -34,6 +34,21 @@ public enum SingleInstance {
         return Lock(fileDescriptor: fd, url: url)
     }
 
+    /// Whether another process holds the lock right now.
+    ///
+    /// `flock` locks belong to the open file description, so this separate open can
+    /// probe the lock without disturbing the holder or leaving a lock of its own.
+    public static func isHeld(at url: URL) -> Bool {
+        let fd = open(url.path, O_RDONLY)
+        guard fd >= 0 else { return false }
+        defer { close(fd) }
+        guard flock(fd, LOCK_EX | LOCK_NB) != 0 else {
+            flock(fd, LOCK_UN)
+            return false
+        }
+        return true
+    }
+
     /// The pid recorded by the instance currently holding the lock, if any.
     public static func holderPid(at url: URL) -> pid_t? {
         guard let data = FileManager.default.contents(atPath: url.path),

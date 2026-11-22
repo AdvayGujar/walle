@@ -179,6 +179,8 @@ public struct CLI {
         case "next": return try set(["--next"] + rest, environment: environment)
         case "prev", "previous": return try set(["--prev"] + rest, environment: environment)
         case "random": return try set(["--random"] + rest, environment: environment)
+        case "rotate": return try rotate(rest, environment: environment)
+        case "upscale": return try upscale(rest, environment: environment)
         case "add": return try dir(["add"] + rest, environment: environment)
         case "remove", "rm": return try dir(["remove"] + rest, environment: environment)
         case "use": return try dir(["use"] + rest, environment: environment)
@@ -440,6 +442,40 @@ public struct CLI {
           Any of these accepts --dry-run to show what would be applied without
           applying it, and --json for machine readable output.
 
+        ROTATION
+          rotate [interval]          Apply the next wallpaper now, then every interval
+                                     (30s, 10m, 2h; default: rotation_interval)
+          rotate --once              Apply one and exit; pair it with launchd for a
+                                     rotation that does not keep a process running
+          rotate --dry-run           Show what would be applied each interval
+          rotate --json              Machine readable output per apply
+          If the picker is open when a rotation is due, that step is skipped. The
+          wallpaper you pick there becomes the starting point for the next step.
+
+        UPSCALING
+          upscale on                 Cache ML copies in the background, return now
+          upscale on --wait          Cache now, blocking until finished
+          upscale off                Use the original images again
+          upscale --refresh          Fill missing cache entries (run on picker open)
+          upscale <file>...          Upscale with the ML backend and write HEIC
+          upscale --all              Do that for every wallpaper in the library
+          upscale --dir <path>       Scan this directory instead of the configured ones
+          upscale --target <WxH>     Target pixels (default: the active display)
+          upscale --mode fill|fit|stretch
+                                     How macOS will place the image (default: fill_mode)
+          upscale --model <name|.param>
+                                     Model name, or a .param file beside its .bin
+          upscale --models <dir>     Models directory (default: upscale_models)
+          upscale --scale 2|3|4      Force the model pass; default picks per image
+          upscale --quality 0-1      HEIC quality (default 0.85)
+          upscale --output <dir>     Where to put the copies
+          upscale --upscaler <path>  Replace the ML backend executable
+          upscale --tool <path>      upscayl-bin path for the default backend
+          upscale --dry-run          Report what would be generated, write nothing
+          upscale --json             Machine readable summary
+          The ML backend is a separate walle-upscaler executable. Replace it, or
+          point --upscaler at your own, without changing the picker or library.
+
         THE LIBRARY
           list                       List the wallpapers that were found
           dirs                       Show the configured directories and their counts
@@ -487,6 +523,7 @@ public struct CLI {
           --json                     Machine readable output where supported
           --dry-run                  Show what would happen, change nothing
           --limit <n>                list, history: stop after n entries
+          --interval <duration>      rotate: 30s, 10m, 2h
           --sort <name|mtime|random> list: ordering
           --dir <path>               list: scan this path instead of the configured ones
           -h, --help                 Show this help
@@ -500,7 +537,7 @@ public struct CLI {
           escape                     Close without changing anything
 
         EXIT CODES
-          0 applied   1 error   2 dismissed   3 already running
+          0 applied   1 error   2 dismissed   3 already running (picker, rotation or upscale)
 
         CONFIG FILE
           \(environment.paths.configFile.path)
@@ -712,6 +749,7 @@ public struct CLI {
             environment.output.out("added \(root)")
             if created { environment.output.err("walle: created \(resolved)") }
         }
+        startLibraryCacheRefresh(environment, config: config)
         return CLIExit.success.rawValue
     }
 
@@ -738,6 +776,7 @@ public struct CLI {
         } else {
             environment.output.out("removed \(target)")
         }
+        startLibraryCacheRefresh(environment, config: config)
         return CLIExit.success.rawValue
     }
 
@@ -761,7 +800,17 @@ public struct CLI {
         } else {
             environment.output.out("using \(root)")
         }
+        startLibraryCacheRefresh(environment, config: config)
         return CLIExit.success.rawValue
+    }
+
+    /// `dir add` / `dir use` should not make the user wait for an ML pass.
+    private static func startLibraryCacheRefresh(_ environment: CLIEnvironment,
+                                                 config: Config) {
+        guard config.upscale else { return }
+        if startBackgroundRefresh(environment) {
+            environment.output.err("walle: caching the library in the background")
+        }
     }
 
     // MARK: - set / current, delegated to walle-picker
@@ -780,6 +829,12 @@ public struct CLI {
         let process = Process()
         process.executableURL = try locatePicker(environment)
         process.arguments = arguments
+        var childEnvironment = environment.environment
+        if let argv0 = CommandLine.arguments.first {
+            childEnvironment["WALLE_CLI"] = URL(fileURLWithPath: argv0)
+                .resolvingSymlinksInPath().path
+        }
+        process.environment = childEnvironment
         let outPipe = Pipe()
         let errPipe = Pipe()
         process.standardOutput = outPipe
@@ -826,8 +881,8 @@ public struct CLI {
            arguments.first != "--current" {
             let (settings, _) = loadConfig(environment)
             if settings.spaces == .all {
-                let appliedPath = StateStore(fileURL: environment.paths.stateFile)
-                    .load().lastAppliedPath
+                let state = StateStore(fileURL: environment.paths.stateFile).load()
+                let appliedPath = state.lastDisplayPath ?? state.lastAppliedPath
                 // macOS persists the apply asynchronously, and that write lands a beat after
                 // the picker exits. Wait for it (the store's mtime advancing) so our own sync
                 // write below is not overwritten by it — which reverted every other Space.
@@ -932,7 +987,12 @@ public struct CLI {
         case .next, .previous:
             library = LibraryScanner(config: config, home: environment.paths.home)
                 .scan(includeAspectRatio: false).wallpapers
-            currentPath = StateStore(fileURL: environment.paths.stateFile).load().lastAppliedPath
+            let applied = StateStore(fileURL: environment.paths.stateFile)
+                .load().lastAppliedPath
+            currentPath = applied.map { path in
+                UpscaleCache.sourceForCurrent(paths: environment.paths,
+                                              displayPath: path) ?? path
+            }
         }
 
         let chosen: Wallpaper
@@ -959,6 +1019,1028 @@ public struct CLI {
         var pickerArguments = ["--apply", chosen.path]
         if options.has("json") { pickerArguments.append("--json") }
         return try runPicker(pickerArguments, environment)
+    }
+
+    // MARK: - rotate
+
+    /// Runs the library on a timer for as long as the command lives.
+    ///
+    /// Each step re-reads the state file rather than remembering an index. That is what
+    /// makes a picker session seamless: the picker records the wallpaper it applied, and
+    /// the next step advances from there instead of from this loop's own last choice.
+    /// A step that lands while the picker is open is skipped so the two never fight over
+    /// the desktop.
+    static func rotate(_ tokens: [String], environment: CLIEnvironment) throws -> Int32 {
+        let options = try OptionParser.parse(
+            tokens,
+            spec: OptionSpec(valueOptions: ["interval"],
+                             boolOptions: ["once", "dry-run", "json"],
+                             shortAliases: ["j": "json", "h": "help"]))
+        if options.has("help") { return help(environment) }
+        guard options.positionals.count <= 1 else {
+            throw CLIError("rotate takes at most one interval")
+        }
+        if options.value("interval") != nil, !options.positionals.isEmpty {
+            throw CLIError("rotate takes the interval as an argument or --interval, not both")
+        }
+
+        let (config, warnings) = loadConfig(environment)
+        reportWarnings(warnings, environment, config: config)
+        let rawInterval = options.value("interval")
+            ?? options.positionals.first
+            ?? config.rotationInterval
+        guard let interval = RotationInterval.parse(rawInterval) else {
+            throw CLIError("rotate expects a duration like 30s, 10m or 2h, got '\(rawInterval)'")
+        }
+
+        let once = options.has("once")
+        let dryRun = options.has("dry-run")
+        let json = options.has("json")
+
+        // One rotation loop at a time, for the same reason the picker has a lock: two
+        // loops would each advance the other's choice and the library would race. The
+        // lock is released when this function returns, not when this block ends, so it
+        // stays held for the whole loop (dry runs touch nothing and need no lock).
+        var rotationLock: SingleInstance.Lock?
+        if !dryRun {
+            guard let lock = SingleInstance.acquire(at: environment.paths.rotationLockFile) else {
+                environment.output.err("walle: another rotation is already running")
+                return CLIExit.alreadyRunning.rawValue
+            }
+            rotationLock = lock
+        }
+        defer {
+            if let rotationLock { SingleInstance.release(rotationLock) }
+        }
+
+        if !once, !json, config.logLevel.showsStatus {
+            environment.output.out("rotating every \(interval.description); press Ctrl-C to stop")
+        }
+
+        let settings = RotationSettings(
+            interval: interval,
+            config: config,
+            dryRun: dryRun,
+            json: json,
+            stateStore: StateStore(fileURL: environment.paths.stateFile),
+            environment: environment)
+        var step = 0
+        while true {
+            step += 1
+            try rotationStep(settings, isFirstStep: step == 1)
+            if once { break }
+            Thread.sleep(forTimeInterval: TimeInterval(interval.seconds))
+        }
+        return CLIExit.success.rawValue
+    }
+
+    private struct RotationSettings {
+        let interval: RotationInterval
+        let config: Config
+        let dryRun: Bool
+        let json: Bool
+        let stateStore: StateStore
+        let environment: CLIEnvironment
+    }
+
+    private static func rotationStep(_ settings: RotationSettings,
+                                     isFirstStep: Bool) throws {
+        let (interval, config, dryRun, json) =
+            (settings.interval, settings.config, settings.dryRun, settings.json)
+        let environment = settings.environment
+
+        let scan = LibraryScanner(config: config, home: environment.paths.home)
+            .scan(includeAspectRatio: false)
+        // Scan warnings are a property of the config, so they are reported once at the
+        // start rather than on every step of a loop that may run for hours.
+        if config.logLevel.showsWarnings, isFirstStep {
+            for warning in scan.warnings {
+                environment.output.err("walle: warning: " + warning)
+            }
+        }
+        guard !scan.wallpapers.isEmpty else {
+            if isFirstStep { throw CLIError("the wallpaper library is empty") }
+            environment.output.err("walle: warning: no wallpapers found; skipping this rotation")
+            return
+        }
+
+        if SingleInstance.isHeld(at: environment.paths.lockFile) {
+            if config.logLevel.showsInfo {
+                environment.output.err("walle: the picker is open; skipping this rotation")
+            }
+            return
+        }
+
+        let currentPath = settings.stateStore.load().lastAppliedPath
+        let chosen: Wallpaper
+        do {
+            chosen = try Selection.resolve(.next, library: scan.wallpapers, history: [],
+                                           currentPath: currentPath, seed: 0)
+        } catch {
+            throw CLIError(String(describing: error))
+        }
+
+        if dryRun {
+            if json {
+                try emitJSON(["wouldApply": chosen.path,
+                              "interval": interval.description], to: environment)
+            } else {
+                environment.output.out(chosen.path)
+            }
+            return
+        }
+
+        let status = try runPicker(["--apply", chosen.path, "--mode", "rotate"], environment)
+        guard status == CLIExit.success.rawValue else {
+            environment.output.err("walle: could not apply " + chosen.path
+                                   + " (walle-picker exited \(status)); rotation continues")
+            return
+        }
+        if json {
+            try emitJSON(["applied": chosen.path, "interval": interval.description],
+                         to: environment)
+        } else if config.logLevel.showsStatus {
+            environment.output.out("rotated to " + chosen.path)
+        }
+    }
+
+    // MARK: - upscale
+
+    private struct UpscaleSettings {
+        let target: PixelSize
+        let mode: FillMode
+        let maxScale: Double
+        let scaleOverride: Int?
+        let model: String
+        let modelsDirectory: URL?
+        let tool: String?
+        let upscaler: URL
+        let quality: Double
+        let outputDir: URL
+        let dryRun: Bool
+        let json: Bool
+        let force: Bool
+        /// True for the hidden `upscale = on` cache; false for explicit exports.
+        let cache: Bool
+        let config: Config
+        let environment: CLIEnvironment
+    }
+
+    private struct UpscalePending {
+        let wallpaper: Wallpaper
+        let sourcePath: String
+        let output: URL
+        let plan: UpscalePlan
+        let info: UpscaleSourceInfo
+    }
+
+    /// Sends a batch to the replaceable `walle-upscaler` module. This command
+    /// owns scanning, target sizing, output naming and the manifest; it knows
+    /// nothing about x4plus, Upscayl or the model runtime.
+    private struct UpscaleSetup {
+        let config: Config
+        let target: PixelSize
+        let mode: FillMode
+        let maxScale: Double
+        let scaleOverride: Int?
+        let quality: Double
+        let modelName: String
+        let modelsDirectory: URL?
+        let tool: String?
+        let upscaler: URL
+    }
+
+    /// Sends a batch to the replaceable `walle-upscaler` module. This command
+    /// owns scanning, target sizing, output naming and the manifest; it knows
+    /// nothing about x4plus, Upscayl or the model runtime.
+    static func upscale(_ tokens: [String], environment: CLIEnvironment) throws -> Int32 {
+        let options = try OptionParser.parse(
+            tokens,
+            spec: OptionSpec(
+                valueOptions: ["target", "mode", "max-scale", "scale", "quality",
+                               "output", "dir", "model", "models", "upscaler", "tool"],
+                boolOptions: ["all", "dry-run", "json", "force", "refresh", "wait"],
+                shortAliases: ["j": "json", "h": "help"]))
+        if options.has("help") { return help(environment) }
+
+        if options.has("refresh") {
+            guard options.positionals.isEmpty, !options.has("all"),
+                  options.all("dir").isEmpty, options.value("output") == nil else {
+                throw CLIError("upscale --refresh uses the configured library; "
+                               + "no paths, --all, --dir or --output")
+            }
+            return try fillUpscaleCache(options, environment: environment,
+                                        setConfig: false, background: false)
+        }
+
+        if let action = options.positionals.first, action == "on" || action == "off" {
+            guard options.positionals.count == 1 else {
+                throw CLIError("upscale \(action) takes no other arguments")
+            }
+            return try upscaleToggle(action == "on", options: options,
+                                     environment: environment)
+        }
+
+        let usesLibrary = options.has("all") || !options.all("dir").isEmpty
+        guard options.positionals.isEmpty || !usesLibrary else {
+            throw CLIError("upscale takes file paths, --all or --dir, not more than one")
+        }
+        guard !options.positionals.isEmpty || usesLibrary else {
+            throw CLIError("upscale needs file paths, --all, --dir or 'upscale on'")
+        }
+
+        let setup = try upscaleSetup(options, environment: environment)
+        let wallpapers = try upscaleWallpapers(options, config: setup.config,
+                                               environment: environment)
+        guard !wallpapers.isEmpty else {
+            throw CLIError("no wallpapers found; check the paths or 'walle list'")
+        }
+
+        let outputDir = upscaleOutputDirectory(options, target: setup.target,
+                                               model: setup.modelName,
+                                               environment: environment)
+        let settings = UpscaleSettings(
+            target: setup.target, mode: setup.mode, maxScale: setup.maxScale,
+            scaleOverride: setup.scaleOverride, model: setup.modelName,
+            modelsDirectory: setup.modelsDirectory, tool: setup.tool,
+            upscaler: setup.upscaler, quality: setup.quality, outputDir: outputDir,
+            dryRun: options.has("dry-run"), json: options.has("json"),
+            force: options.has("force"), cache: false,
+            config: setup.config, environment: environment)
+        return try runUpscaleLocked(wallpapers, settings: settings,
+                                    environment: environment)
+    }
+
+    /// `walle upscale on` enables transparent use of a hidden cache and fills
+    /// it for the configured library. `off` leaves the cache on disk but uses
+    /// the originals again.
+    private static func upscaleToggle(
+        _ on: Bool, options: ParsedOptions, environment: CLIEnvironment
+    ) throws -> Int32 {
+        if options.has("all") || !options.all("dir").isEmpty
+            || options.positionals.count != 1 {
+            throw CLIError("upscale \(on ? "on" : "off") does not take paths, --all or --dir")
+        }
+        if options.value("output") != nil {
+            throw CLIError("upscale on/off uses a hidden cache; --output is for explicit exports")
+        }
+        if on, options.value("mode") != nil {
+            throw CLIError("upscale on always sizes for fill; --mode is for explicit exports")
+        }
+
+        var (config, warnings) = loadConfig(environment)
+        reportWarnings(warnings, environment, config: config)
+        let dryRun = options.has("dry-run")
+        let json = options.has("json")
+
+        if !on {
+            if !dryRun {
+                config.upscale = false
+                try config.save(to: environment.paths.configFile, updating: ["upscale"])
+                try? FileManager.default.removeItem(at: environment.paths.upscalePendingRefresh)
+            }
+            if json {
+                try emitJSON(["upscale": false, "dryRun": dryRun], to: environment)
+            } else {
+                environment.output.out("upscale off: using the original images")
+            }
+            return CLIExit.success.rawValue
+        }
+
+        return try fillUpscaleCache(
+            options, environment: environment, setConfig: true,
+            background: !options.has("wait") && !dryRun)
+    }
+
+    /// Shared by `upscale on` and the background `upscale --refresh` used when
+    /// the picker opens. `setConfig` is false for refresh, so a new image can be
+    /// cached without touching the user's setting.
+    private static func fillUpscaleCache(
+        _ options: ParsedOptions, environment: CLIEnvironment,
+        setConfig: Bool, background: Bool
+    ) throws -> Int32 {
+        let (config, warnings) = loadConfig(environment)
+        reportWarnings(warnings, environment, config: config)
+        let dryRun = options.has("dry-run")
+        let json = options.has("json")
+
+        if !setConfig, !config.upscale {
+            if json {
+                try emitJSON(["upscale": false, "generated": 0, "skipped": 0,
+                              "failed": 0], to: environment)
+            }
+            return CLIExit.success.rawValue
+        }
+
+        let setup = try upscaleSetup(options, environment: environment,
+                                     modeOverride: .fill)
+        let scan = LibraryScanner(config: setup.config, home: environment.paths.home)
+            .scan(includeAspectRatio: false)
+        guard !scan.wallpapers.isEmpty else {
+            if !dryRun { pruneCacheLocked(environment) }
+            if setConfig {
+                throw CLIError("no wallpapers found; add a directory with 'walle dir add'")
+            }
+            return CLIExit.success.rawValue
+        }
+
+        if !dryRun, setConfig {
+            var updated = config
+            updated.upscale = true
+            try updated.save(to: environment.paths.configFile, updating: ["upscale"])
+        }
+
+        if !dryRun, background {
+            let started = startBackgroundRefresh(
+                environment, extra: refreshArguments(options))
+            if json {
+                try emitJSON([
+                    "upscale": true,
+                    "background": true,
+                    "log": environment.paths.upscaleRefreshLog.path,
+                ], to: environment)
+            } else {
+                environment.output.out("upscale on: caching in the background")
+                if !started, config.logLevel.showsWarnings {
+                    environment.output.err(
+                        "walle: a cache fill is already running or could not start; "
+                        + "log: " + environment.paths.upscaleRefreshLog.path)
+                }
+            }
+            return CLIExit.success.rawValue
+        }
+
+        let outputDir = UpscaleCache.root(paths: environment.paths,
+                                          model: setup.modelName,
+                                          target: setup.target)
+        var cacheConfig = setup.config
+        cacheConfig.upscale = true
+        let settings = UpscaleSettings(
+            target: setup.target, mode: .fill, maxScale: setup.maxScale,
+            scaleOverride: setup.scaleOverride, model: setup.modelName,
+            modelsDirectory: setup.modelsDirectory, tool: setup.tool,
+            upscaler: setup.upscaler, quality: setup.quality, outputDir: outputDir,
+            dryRun: dryRun, json: json, force: options.has("force"), cache: true,
+            config: cacheConfig, environment: environment)
+        let status = try runUpscaleLocked(scan.wallpapers, settings: settings,
+                                          environment: environment)
+        if status == CLIExit.success.rawValue, !dryRun {
+            reapplyCachedCurrent(environment)
+            consumePendingRefresh(environment)
+        }
+        return status
+    }
+
+    /// A change arrived while a fill was running. The fill leaves a marker, and
+    /// this starts one more pass after the lock is released.
+    private static func consumePendingRefresh(_ environment: CLIEnvironment) {
+        let marker = environment.paths.upscalePendingRefresh
+        guard FileManager.default.fileExists(atPath: marker.path) else { return }
+        try? FileManager.default.removeItem(at: marker)
+        let (config, _) = loadConfig(environment)
+        guard config.upscale else { return }
+        _ = startBackgroundRefresh(environment)
+    }
+
+    /// Start `walle upscale --refresh` detached. The CLI path is passed through
+    /// WALLE_CLI so the child is found even from a Homebrew/keg relocation.
+    @discardableResult
+    private static func startBackgroundRefresh(
+        _ environment: CLIEnvironment, extra: [String] = []
+    ) -> Bool {
+        var childEnvironment = environment.environment
+        if childEnvironment["WALLE_CLI"] == nil,
+           let argv0 = CommandLine.arguments.first {
+            childEnvironment["WALLE_CLI"] = URL(fileURLWithPath: argv0)
+                .resolvingSymlinksInPath().path
+        }
+        return UpscaleCache.refreshInBackground(
+            paths: environment.paths, environment: childEnvironment,
+            enabled: true, extraArguments: extra)
+    }
+
+    private static func refreshArguments(_ options: ParsedOptions) -> [String] {
+        var arguments: [String] = []
+        for name in ["target", "max-scale", "scale", "quality", "model",
+                     "models", "tool", "upscaler"] {
+            if let value = options.value(name) {
+                arguments.append("--" + name)
+                arguments.append(value)
+            }
+        }
+        if options.has("force") { arguments.append("--force") }
+        return arguments
+    }
+
+    /// After a fill, switch the currently displayed source to its cached copy
+    /// without asking. Skipped if the picker is open or the desktop was changed
+    /// outside walle.
+    private static func reapplyCachedCurrent(_ environment: CLIEnvironment) {
+        let (config, _) = loadConfig(environment)
+        guard config.upscale else { return }
+        guard !SingleInstance.isHeld(at: environment.paths.lockFile) else { return }
+        let state = StateStore(fileURL: environment.paths.stateFile).load()
+        guard let applied = state.lastAppliedPath else { return }
+        let source = UpscaleCache.sourceForCurrent(
+            paths: environment.paths, displayPath: applied) ?? applied
+        guard FileManager.default.fileExists(atPath: source) else { return }
+        guard let current = capturePicker(["--current"], environment),
+              walleCanonicalPath(current) == walleCanonicalPath(source),
+              let target = try? displayPixelSize(environment) else { return }
+        let cache = UpscaleCache(paths: environment.paths,
+                                 model: config.upscaleModel, target: target)
+        guard let cached = cache.cachedURL(for: URL(fileURLWithPath: source)) else { return }
+        if let lastDisplay = state.lastDisplayPath,
+           walleCanonicalPath(lastDisplay) == walleCanonicalPath(cached.path) {
+            return
+        }
+        environment.output.err("walle: applying the upscaled version of \(source)")
+        _ = try? runPicker(["--apply", source], environment)
+    }
+
+    /// Prune without racing a running fill. The holder will prune when it
+    /// finishes; this is for the empty-library / refresh path.
+    private static func pruneCacheLocked(_ environment: CLIEnvironment) {
+        guard let lock = SingleInstance.acquire(at: environment.paths.upscaleLockFile) else {
+            return
+        }
+        defer { SingleInstance.release(lock) }
+        UpscaleCache.pruneAll(paths: environment.paths)
+    }
+
+    private static func upscaleSetup(
+        _ options: ParsedOptions, environment: CLIEnvironment,
+        modeOverride: FillMode? = nil
+    ) throws -> UpscaleSetup {
+        let (config, warnings) = loadConfig(environment)
+        reportWarnings(warnings, environment, config: config)
+
+        let target = try upscaleTarget(options, environment: environment)
+        let mode: FillMode
+        if let modeOverride {
+            mode = modeOverride
+        } else {
+            mode = try upscaleMode(options, config: config)
+        }
+        let maxScale = try upscaleDouble(options.value("max-scale"), name: "max-scale") ?? 4
+        guard maxScale > 1 else { throw CLIError("--max-scale must be greater than 1") }
+        let scaleOverride = try upscaleScale(options)
+        let quality = try upscaleDouble(options.value("quality"), name: "quality") ?? 0.85
+        guard (0...1).contains(quality) else {
+            throw CLIError("--quality must be between 0 and 1")
+        }
+
+        let model = try upscaleModel(options, config: config, environment: environment)
+        let tool = options.value("tool")
+            ?? (config.upscaleTool.isEmpty ? nil : config.upscaleTool)
+        let command = options.value("upscaler") ?? config.upscaleCommand
+        guard let upscaler = UpscalerLocator.locate(
+            command: command, environment: environment.environment) else {
+            throw CLIError("could not find the upscaler '\(command)'; build walle-upscaler "
+                           + "or set upscale_command / WALLE_UPSCALER")
+        }
+
+        return UpscaleSetup(
+            config: config, target: target, mode: mode, maxScale: maxScale,
+            scaleOverride: scaleOverride, quality: quality,
+            modelName: model.name, modelsDirectory: model.directory,
+            tool: tool, upscaler: upscaler)
+    }
+
+    private static func runUpscaleLocked(
+        _ wallpapers: [Wallpaper], settings: UpscaleSettings,
+        environment: CLIEnvironment
+    ) throws -> Int32 {
+        var lock: SingleInstance.Lock?
+        if !settings.dryRun {
+            guard let acquired = SingleInstance.acquire(at: environment.paths.upscaleLockFile) else {
+                environment.output.err("walle: another upscale is already running")
+                return CLIExit.alreadyRunning.rawValue
+            }
+            lock = acquired
+            UpscaleCache.pruneAll(paths: environment.paths)
+            do {
+                try FileManager.default.createDirectory(at: settings.outputDir,
+                                                        withIntermediateDirectories: true)
+            } catch {
+                SingleInstance.release(acquired)
+                throw CLIError("could not create output directory "
+                               + "\(settings.outputDir.path): \(error)")
+            }
+        }
+        defer {
+            if let lock { SingleInstance.release(lock) }
+        }
+        return try runUpscaleBatch(wallpapers, settings: settings)
+    }
+
+    static func upscaleTarget(_ options: ParsedOptions,
+                              environment: CLIEnvironment) throws -> PixelSize {
+        let raw = options.value("target") ?? "display"
+        if raw.lowercased() == "display" { return try displayPixelSize(environment) }
+        guard let size = PixelSize.parse(raw) else {
+            throw CLIError("--target expects display or WxH, got '\(raw)'")
+        }
+        return size
+    }
+
+    static func displayPixelSize(_ environment: CLIEnvironment) throws -> PixelSize {
+        guard let text = capturePicker(["--display-info"], environment),
+              let data = text.data(using: .utf8),
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let screens = object["screens"] as? [[String: Any]],
+              !screens.isEmpty else {
+            throw CLIError("could not read the display size; pass --target WxH")
+        }
+        let active = screens.first { ($0["active"] as? Bool) == true } ?? screens[0]
+        guard let width = active["pixelWidth"] as? Int,
+              let height = active["pixelHeight"] as? Int else {
+            throw CLIError("walle-picker --display-info did not report pixel dimensions")
+        }
+        return PixelSize(width: width, height: height)
+    }
+
+    static func upscaleMode(_ options: ParsedOptions, config: Config) throws -> FillMode {
+        let raw = options.value("mode") ?? config.fillMode.rawValue
+        guard let mode = FillMode.parse(raw) else {
+            throw CLIError("--mode expects fill, fit, stretch or center, got '\(raw)'")
+        }
+        return mode
+    }
+
+    static func upscaleScale(_ options: ParsedOptions) throws -> Int? {
+        guard let raw = options.value("scale") else { return nil }
+        guard let value = Int(raw), [2, 3, 4].contains(value) else {
+            throw CLIError("--scale expects 2, 3 or 4, got '\(raw)'")
+        }
+        return value
+    }
+
+    static func upscaleDouble(_ raw: String?, name: String) throws -> Double? {
+        guard let raw else { return nil }
+        guard let value = Double(raw), value.isFinite else {
+            throw CLIError("--\(name) expects a number, got '\(raw)'")
+        }
+        return value
+    }
+
+    /// Resolves `--model`/`upscale_model`. The value may be a model name in the
+    /// models directory, or a `.param` path whose `.bin` sits beside it.
+    static func upscaleModel(
+        _ options: ParsedOptions, config: Config, environment: CLIEnvironment
+    ) throws -> (name: String, directory: URL?) {
+        let raw = (options.value("model") ?? config.upscaleModel)
+            .trimmingCharacters(in: .whitespaces)
+        guard !raw.isEmpty else { throw CLIError("upscale model is empty") }
+
+        var directory: URL?
+        if let models = options.value("models"), !models.isEmpty {
+            directory = walleExpand(models, home: environment.paths.home).standardizedFileURL
+        } else if !config.upscaleModels.isEmpty {
+            directory = walleExpand(config.upscaleModels,
+                                    home: environment.paths.home).standardizedFileURL
+        }
+
+        var name = raw
+        if raw.contains("/") || FileManager.default.fileExists(atPath: raw) {
+            let url = walleExpand(raw, home: environment.paths.home).standardizedFileURL
+            var isDirectory: ObjCBool = false
+            guard FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory) else {
+                throw CLIError("model file does not exist: \(url.path)")
+            }
+            guard !isDirectory.boolValue else {
+                throw CLIError("--model expects a model name or .param file, not a directory; "
+                               + "use --models")
+            }
+            guard url.pathExtension.lowercased() == "param" else {
+                throw CLIError("--model path must point at a .param file")
+            }
+            name = url.deletingPathExtension().lastPathComponent
+            if directory == nil { directory = url.deletingLastPathComponent() }
+        } else if name.hasSuffix(".param") {
+            name = String(name.dropLast(6))
+        }
+
+        guard !name.isEmpty, !name.contains("/") else {
+            throw CLIError("invalid model name '\(raw)'")
+        }
+        if let directory {
+            var isDirectory: ObjCBool = false
+            guard FileManager.default.fileExists(atPath: directory.path,
+                                                  isDirectory: &isDirectory),
+                  isDirectory.boolValue else {
+                throw CLIError("models directory does not exist: \(directory.path)")
+            }
+        }
+        return (name, directory)
+    }
+
+    static func upscaleOutputDirectory(_ options: ParsedOptions, target: PixelSize,
+                                       model: String,
+                                       environment: CLIEnvironment) -> URL {
+        if let raw = options.value("output"), !raw.isEmpty {
+            return walleExpand(raw, home: environment.paths.home).standardizedFileURL
+        }
+        return environment.paths.upscaledDir
+            .appendingPathComponent("ml")
+            .appendingPathComponent(walleSafeUpscaleModelName(model))
+            .appendingPathComponent(target.description)
+    }
+
+    static func upscaleWallpapers(_ options: ParsedOptions, config: Config,
+                                  environment: CLIEnvironment) throws -> [Wallpaper] {
+        if !options.positionals.isEmpty {
+            var seen = Set<String>()
+            var result: [Wallpaper] = []
+            for path in options.positionals {
+                var isDirectory: ObjCBool = false
+                if FileManager.default.fileExists(atPath: path, isDirectory: &isDirectory),
+                   isDirectory.boolValue {
+                    throw CLIError("upscale takes image files, not directories; "
+                                   + "use --dir \(path)")
+                }
+                let wallpaper: Wallpaper
+                do {
+                    wallpaper = try Selection.resolve(
+                        .explicit(path), library: [], history: [],
+                        currentPath: nil, seed: 0)
+                } catch {
+                    throw CLIError(String(describing: error))
+                }
+                let canonical = walleCanonicalPath(wallpaper.url.path)
+                if seen.insert(canonical).inserted { result.append(wallpaper) }
+            }
+            return result
+        }
+
+        var scanConfig = config
+        if !options.has("all") { scanConfig.wallpaperDirs = [] }
+        let scan = LibraryScanner(config: scanConfig, home: environment.paths.home)
+            .scan(extraDirs: options.all("dir"), includeAspectRatio: false)
+        if config.logLevel.showsWarnings {
+            for warning in scan.warnings {
+                environment.output.err("walle: warning: " + warning)
+            }
+        }
+        var seen = Set<String>()
+        return scan.wallpapers.filter { seen.insert($0.path).inserted }
+    }
+
+    private static func runUpscaleBatch(_ wallpapers: [Wallpaper],
+                                        settings: UpscaleSettings) throws -> Int32 {
+        let outputDir = settings.outputDir
+        let manifestURL = outputDir.appendingPathComponent("manifest.json")
+        let previous = UpscaleManifest.load(from: manifestURL)
+        var ownerByOutput: [String: String] = [:]
+        for entry in previous.entries {
+            ownerByOutput[entry.output.lowercased()] = entry.source
+        }
+        var usedNames = Set(previous.entries.map { $0.output.lowercased() })
+        var processedSources = Set<String>()
+        var kept: [UpscaleManifest.Entry] = []
+        var results: [[String: Any]] = []
+        var pending: [UpscalePending] = []
+        var counts = (generated: 0, skipped: 0, failed: 0)
+
+        for wallpaper in wallpapers {
+            let sourcePath = walleCanonicalPath(wallpaper.url.path)
+            processedSources.insert(sourcePath)
+            do {
+                let info = try UpscaleInspector.inspect(wallpaper.url)
+                if let reason = UpscaleInspector.skipReason(for: info) {
+                    counts.skipped += 1
+                    results.append(upscaleSkipResult(source: sourcePath,
+                                                     reason: reason.description))
+                    reportUpscale(settings, "skipped \(wallpaper.name): " + reason.description,
+                                  infoOnly: true)
+                    continue
+                }
+
+                let plan: UpscalePlan
+                switch UpscaleGeometry.plan(
+                    sourceWidth: info.width, sourceHeight: info.height,
+                    target: settings.target, mode: settings.mode,
+                    maxScale: settings.maxScale,
+                    scaleOverride: settings.scaleOverride) {
+                case .success(let value): plan = value
+                case .failure(let reason): throw reason
+                }
+
+                let existing = previous.entry(forSource: sourcePath)
+                if !settings.force, let existing,
+                   existing.matches(sourceInfo: info, plan: plan, mode: settings.mode,
+                                    format: "heic", quality: settings.quality,
+                                    model: settings.model,
+                                    tool: settings.tool,
+                                    modelsDirectory: settings.modelsDirectory?.path),
+                   FileManager.default.fileExists(
+                    atPath: outputDir.appendingPathComponent(existing.output).path) {
+                    counts.skipped += 1
+                    kept.append(existing)
+                    results.append(upscaleEntryResult(
+                        source: sourcePath,
+                        output: outputDir.appendingPathComponent(existing.output),
+                        entry: existing))
+                    continue
+                }
+
+                let outputName = upscaleOutputName(
+                    sourcePath: sourcePath, existing: existing,
+                    ownerByOutput: ownerByOutput, used: &usedNames,
+                    outputDir: outputDir, force: settings.force)
+                pending.append(UpscalePending(
+                    wallpaper: wallpaper, sourcePath: sourcePath,
+                    output: outputDir.appendingPathComponent(outputName),
+                    plan: plan, info: info))
+            } catch let reason as UpscaleSkipReason {
+                counts.skipped += 1
+                results.append(upscaleSkipResult(source: sourcePath,
+                                                 reason: reason.description))
+                reportUpscale(settings, "skipped \(wallpaper.name): " + reason.description,
+                              infoOnly: true)
+            } catch {
+                counts.failed += 1
+                results.append(["source": sourcePath, "status": "failed",
+                                "error": String(describing: error)])
+                settings.environment.output.err(
+                    "walle: \(sourcePath): \(String(describing: error))")
+            }
+        }
+
+        if settings.dryRun {
+            counts.generated = pending.count
+            for item in pending {
+                results.append(upscalePendingResult(item, status: "wouldGenerate"))
+                let target = settings.cache ? item.output.lastPathComponent : item.output.path
+                reportUpscale(settings, "would cache \(target)")
+            }
+            keepPrevious(previous, excluding: processedSources, from: outputDir, in: &kept)
+            return try finishUpscale(settings, counts: counts, results: results)
+        }
+
+        if !pending.isEmpty {
+            let executed = try executeUpscale(pending, settings: settings,
+                                              kept: &kept, results: &results)
+            counts.generated += executed.generated
+            counts.failed += executed.failed
+            counts.skipped += executed.skipped
+        }
+        keepPrevious(previous, excluding: processedSources, from: outputDir, in: &kept)
+        if !settings.dryRun {
+            var manifest = previous
+            manifest.entries = kept.sorted { $0.source < $1.source }
+            do {
+                try manifest.save(to: manifestURL)
+            } catch {
+                settings.environment.output.err(
+                    "walle: warning: could not write \(manifestURL.path): \(error)")
+            }
+        }
+        return try finishUpscale(settings, counts: counts, results: results)
+    }
+
+    private static func executeUpscale(
+        _ pending: [UpscalePending], settings: UpscaleSettings,
+        kept: inout [UpscaleManifest.Entry],
+        results: inout [[String: Any]]
+    ) throws -> (generated: Int, skipped: Int, failed: Int) {
+        let jobs = pending.map {
+            UpscaleJobSpec.Item(source: $0.sourcePath, output: $0.output.path,
+                                scale: $0.plan.outputScale)
+        }
+        let spec = UpscaleJobSpec(
+            model: settings.model, modelsDirectory: settings.modelsDirectory?.path,
+            tool: settings.tool, quality: settings.quality, format: "heic",
+            target: settings.target, jobs: jobs)
+        let jobURL = settings.outputDir
+            .appendingPathComponent(".walle-job-\(UUID().uuidString).json")
+        let resultURL = settings.outputDir
+            .appendingPathComponent(".walle-result-\(UUID().uuidString).json")
+        defer {
+            try? FileManager.default.removeItem(at: jobURL)
+            try? FileManager.default.removeItem(at: resultURL)
+        }
+
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        try encoder.encode(spec).write(to: jobURL, options: .atomic)
+
+        let run = runUpscaler(settings.upscaler, jobURL: jobURL,
+                              resultURL: resultURL, environment: settings.environment)
+        for line in run.output.split(separator: "\n", omittingEmptySubsequences: true) {
+            settings.environment.output.err(String(line))
+        }
+
+        let moduleResult = try? JSONDecoder().decode(
+            UpscaleJobResult.self, from: Data(contentsOf: resultURL))
+        guard let moduleResult else {
+            for item in pending {
+                results.append(upscalePendingResult(
+                    item, status: "failed",
+                    error: "upscaler exited \(run.status) without a result file"))
+            }
+            settings.environment.output.err(
+                "walle: the upscaler did not return a result; nothing was recorded")
+            return (0, 0, pending.count)
+        }
+
+        var generated = 0
+        var skipped = 0
+        var failed = 0
+        for item in pending {
+            guard let answer = moduleResult.item(forOutput: item.output.path) else {
+                failed += 1
+                results.append(upscalePendingResult(
+                    item, status: "failed", error: "upscaler returned no status"))
+                continue
+            }
+            switch answer.status {
+            case "ok":
+                do {
+                    let written = try UpscaleInspector.inspect(item.output)
+                    let entry = UpscaleManifest.Entry(
+                        source: item.sourcePath,
+                        output: item.output.lastPathComponent,
+                        plan: item.plan, mode: settings.mode, format: "heic",
+                        quality: settings.quality, model: settings.model,
+                        upscaler: settings.upscaler.path, tool: settings.tool,
+                        modelsDirectory: settings.modelsDirectory?.path,
+                        sourceMtime: item.info.modifiedAt,
+                        sourceBytes: item.info.fileSize,
+                        outputWidth: written.width, outputHeight: written.height)
+                    kept.append(entry)
+                    generated += 1
+                    results.append(upscalePendingResult(
+                        item, status: "generated",
+                        width: written.width, height: written.height))
+                    let location = settings.cache ? item.output.lastPathComponent
+                                                  : item.output.path
+                    reportUpscale(settings, "\(item.plan.outputScale)x  "
+                                  + "\(written.width)x\(written.height)  "
+                                  + "\(item.wallpaper.name)  \(location)")
+                } catch {
+                    failed += 1
+                    results.append(upscalePendingResult(
+                        item, status: "failed",
+                        error: "output is unreadable: \(String(describing: error))"))
+                }
+            case "skipped":
+                skipped += 1
+                results.append(upscalePendingResult(
+                    item, status: "skipped", reason: answer.error))
+            default:
+                failed += 1
+                results.append(upscalePendingResult(
+                    item, status: "failed",
+                    error: answer.error ?? "upscaler failed"))
+            }
+        }
+        return (generated, skipped, failed)
+    }
+
+    private static func runUpscaler(
+        _ url: URL, jobURL: URL, resultURL: URL,
+        environment: CLIEnvironment
+    ) -> (status: Int32, output: String) {
+        let process = Process()
+        process.executableURL = url
+        process.arguments = ["--job", jobURL.path, "--result", resultURL.path]
+        process.environment = environment.environment
+        let pipe = Pipe()
+        process.standardOutput = pipe
+        process.standardError = pipe
+        do {
+            try process.run()
+        } catch {
+            return (127, "could not run \(url.path): \(error)")
+        }
+        let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        process.waitUntilExit()
+        return (process.terminationStatus, String(data: data, encoding: .utf8) ?? "")
+    }
+
+    private static func keepPrevious(
+        _ previous: UpscaleManifest, excluding processed: Set<String>,
+        from outputDir: URL, in kept: inout [UpscaleManifest.Entry]
+    ) {
+        for entry in previous.entries where !processed.contains(entry.source) {
+            if FileManager.default.fileExists(
+                atPath: outputDir.appendingPathComponent(entry.output).path) {
+                kept.append(entry)
+            }
+        }
+    }
+
+    private static func finishUpscale(
+        _ settings: UpscaleSettings, counts: (generated: Int, skipped: Int, failed: Int),
+        results: [[String: Any]]
+    ) throws -> Int32 {
+        if settings.json {
+            try emitJSON([
+                "target": settings.target.description,
+                "mode": settings.mode.rawValue,
+                "format": "heic",
+                "model": settings.model,
+                "cache": settings.cache,
+                "dryRun": settings.dryRun,
+                "generated": counts.generated,
+                "skipped": counts.skipped,
+                "failed": counts.failed,
+                "outputDir": settings.outputDir.path,
+                "files": results,
+            ], to: settings.environment)
+        } else {
+            let verb: String
+            if settings.dryRun {
+                verb = settings.cache ? "would cache" : "would generate"
+            } else {
+                verb = settings.cache ? "cached" : "generated"
+            }
+            settings.environment.output.out(
+                "\(counts.generated) \(verb), \(counts.skipped) skipped, "
+                    + "\(counts.failed) failed")
+            settings.environment.output.out("model: \(settings.model)  "
+                                            + "target: \(settings.target.description)")
+            if settings.cache {
+                settings.environment.output.out(
+                    settings.dryRun ? "upscale: would be on" : "upscale: on")
+                if settings.config.logLevel.showsInfo {
+                    settings.environment.output.out("cache: \(settings.outputDir.path)")
+                }
+            } else {
+                settings.environment.output.out("output: \(settings.outputDir.path)")
+            }
+        }
+        return counts.failed == 0 ? CLIExit.success.rawValue : CLIExit.failure.rawValue
+    }
+
+    private static func reportUpscale(_ settings: UpscaleSettings, _ message: String,
+                                      infoOnly: Bool = false) {
+        let enabled = infoOnly ? settings.config.logLevel.showsInfo
+                               : settings.config.logLevel.showsStatus
+        guard !settings.json, enabled else { return }
+        settings.environment.output.err(message)
+    }
+
+    private static func upscaleOutputName(
+        sourcePath: String, existing: UpscaleManifest.Entry?,
+        ownerByOutput: [String: String], used: inout Set<String>,
+        outputDir: URL, force: Bool
+    ) -> String {
+        if let existing, existing.output.lowercased().hasSuffix(".heic"),
+           ownerByOutput[existing.output.lowercased()] == sourcePath {
+            return existing.output
+        }
+
+        let base = URL(fileURLWithPath: sourcePath).deletingPathExtension().lastPathComponent
+        var candidate = base + ".heic"
+        var attempt = 0
+        while used.contains(candidate.lowercased())
+            || (!force && FileManager.default.fileExists(
+                atPath: outputDir.appendingPathComponent(candidate).path)) {
+            attempt += 1
+            let suffix = attempt == 1
+                ? walleUpscaleNameSuffix(for: sourcePath)
+                : walleUpscaleNameSuffix(for: sourcePath) + "-" + String(attempt)
+            candidate = base + "-" + suffix + ".heic"
+            if attempt > 100 { break }
+        }
+        used.insert(candidate.lowercased())
+        return candidate
+    }
+
+    private static func upscaleSkipResult(source: String, reason: String) -> [String: Any] {
+        ["source": source, "status": "skipped", "reason": reason]
+    }
+
+    private static func upscaleEntryResult(source: String, output: URL,
+                                           entry: UpscaleManifest.Entry) -> [String: Any] {
+        [
+            "source": source,
+            "output": output.path,
+            "status": "skipped",
+            "width": entry.outputWidth,
+            "height": entry.outputHeight,
+            "scale": Int(entry.scale),
+        ]
+    }
+
+    private static func upscalePendingResult(
+        _ item: UpscalePending, status: String, width: Int? = nil,
+        height: Int? = nil, error: String? = nil, reason: String? = nil
+    ) -> [String: Any] {
+        var object: [String: Any] = [
+            "source": item.sourcePath,
+            "output": item.output.path,
+            "status": status,
+            "scale": item.plan.outputScale,
+            "requiredScale": item.plan.requiredScale,
+            "width": width ?? item.info.width * item.plan.outputScale,
+            "height": height ?? item.info.height * item.plan.outputScale,
+        ]
+        if let error { object["error"] = error }
+        if let reason { object["reason"] = reason }
+        return object
     }
 
     static func current(_ tokens: [String], environment: CLIEnvironment) throws -> Int32 {

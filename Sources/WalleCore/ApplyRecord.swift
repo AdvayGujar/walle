@@ -6,7 +6,8 @@ import Foundation
 /// command. It was previously written with try? which silently discarded the error and
 /// left no trace that history had not been recorded; now the caller gets the problems back
 /// and can report them.
-public func walleRecordApplied(path: String, paths: WallePaths, mode: String) -> [String] {
+public func walleRecordApplied(path: String, displayPath: String? = nil,
+                               paths: WallePaths, mode: String) -> [String] {
     var warnings: [String] = []
 
     do {
@@ -19,6 +20,7 @@ public func walleRecordApplied(path: String, paths: WallePaths, mode: String) ->
     let stateStore = StateStore(fileURL: paths.stateFile)
     var state = stateStore.load()
     state.lastAppliedPath = path
+    state.lastDisplayPath = displayPath
     do {
         try stateStore.save(state)
     } catch {

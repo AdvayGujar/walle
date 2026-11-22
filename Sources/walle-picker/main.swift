@@ -53,6 +53,7 @@ Normally launched for you by the walle CLI:
 HEADLESS MODES
   --apply <path> [--json]   apply a wallpaper and exit
   --current [--json]        print the current desktop wallpaper
+  --display-info            report every screen's point and pixel size as JSON
   --snapshot <file>         render the corridor to a PNG and exit
                             [--width n] [--height n] [--collapsed]
   --selftest [--json]       report what this environment can do
@@ -100,11 +101,47 @@ func focusIndex(in library: [Wallpaper], currentPath: String?) -> Int {
     return library.firstIndex { $0.path == currentPath } ?? 0
 }
 
+func cacheTarget(for screen: NSScreen) -> PixelSize {
+    let scale = Double(screen.backingScaleFactor)
+    return PixelSize(
+        width: Int((screen.frame.width * scale).rounded()),
+        height: Int((screen.frame.height * scale).rounded()))
+}
+
+/// The cached HEIC when upscale is on and fresh, otherwise the source.
+func applyURL(for source: URL) -> URL {
+    guard config.upscale,
+          let screen = setter.activeScreen() ?? NSScreen.main ?? NSScreen.screens.first else {
+        return source
+    }
+    let target = cacheTarget(for: screen)
+    let cache = UpscaleCache(paths: paths, model: config.upscaleModel, target: target)
+    let cached = cache.cachedURL(for: source)
+    if ProcessInfo.processInfo.environment["WALLE_TRACE"] != nil {
+        writeError("cache \(target.description) \(source.path) -> \(cached?.path ?? "miss")")
+    }
+    return cached ?? source
+}
+
+func refreshCacheInBackground() {
+    UpscaleCache.refreshInBackground(
+        paths: paths, environment: ProcessInfo.processInfo.environment,
+        enabled: config.upscale)
+}
+
+/// Maps a hidden cached wallpaper back to the source image the user knows.
+func currentSourcePath() -> String? {
+    guard let display = setter.currentWallpaperURL()?.path else { return nil }
+    return UpscaleCache.sourceForCurrent(paths: paths, displayPath: display) ?? display
+}
+
 func currentWallpaperJSON() -> [String: Any] {
     var object: [String: Any] = ["screenCount": NSScreen.screens.count]
     if let url = setter.currentWallpaperURL() {
-        object["path"] = url.path
-        object["name"] = url.lastPathComponent
+        let source = UpscaleCache.sourceForCurrent(paths: paths, displayPath: url.path)
+            ?? url.path
+        object["path"] = source
+        object["name"] = URL(fileURLWithPath: source).lastPathComponent
     }
     if let screen = setter.activeScreen() {
         object["activeScreen"] = [
@@ -127,8 +164,8 @@ switch command {
 case "--current":
     if wantsJSON(rest) {
         emit(currentWallpaperJSON())
-    } else if let url = setter.currentWallpaperURL() {
-        print(url.path)
+    } else if let source = currentSourcePath() {
+        print(source)
     } else {
         writeError("could not read the current desktop wallpaper")
         exit(1)
@@ -140,26 +177,45 @@ case "--apply":
         writeError("--apply needs a path")
         exit(1)
     }
-    let url = walleExpand(rawPath, home: paths.home).standardizedFileURL
-    guard FileManager.default.fileExists(atPath: url.path) else {
-        writeError("file does not exist: " + url.path)
+    let requestedURL = walleExpand(rawPath, home: paths.home).standardizedFileURL
+    guard FileManager.default.fileExists(atPath: requestedURL.path) else {
+        writeError("file does not exist: " + requestedURL.path)
         exit(1)
     }
+    // An explicit apply of a hidden cache file still records the source image,
+    // so next/prev/history keep working against the user's library.
+    let knownSource = UpscaleCache.sourceForCurrent(
+        paths: paths, displayPath: requestedURL.path)
+    let sourceURL: URL
+    if let knownSource, FileManager.default.fileExists(atPath: knownSource) {
+        sourceURL = URL(fileURLWithPath: knownSource)
+    } else {
+        sourceURL = requestedURL
+    }
+    let displayURL = applyURL(for: sourceURL)
     do {
-        try setter.setWallpaper(at: url, target: config.applyTo, fillMode: config.fillMode)
+        try setter.setWallpaper(at: displayURL, target: config.applyTo,
+                                fillMode: config.fillMode)
     } catch {
         writeError(String(describing: error))
         exit(1)
     }
 
     // Recording happens only after the desktop actually changed, and a failure here is
-    // reported rather than swallowed.
-    for warning in walleRecordApplied(path: url.path, paths: paths, mode: "cli") {
+    // reported rather than swallowed. --mode lets a caller say where the apply came
+    // from ("rotate"), so history explains why the wallpaper changed on its own.
+    let mode = value(of: "--mode", in: rest) ?? "cli"
+    let cached = displayURL.path != sourceURL.path
+    for warning in walleRecordApplied(
+        path: sourceURL.path,
+        displayPath: cached ? displayURL.path : nil,
+        paths: paths, mode: mode) {
         writeError("warning: " + warning)
     }
+    if !cached, config.upscale { refreshCacheInBackground() }
 
     if wantsJSON(rest) {
-        emit(["applied": url.path,
+        emit(["applied": sourceURL.path,
               "target": config.applyTo.rawValue,
               "fillMode": config.fillMode.rawValue])
     }
@@ -178,7 +234,7 @@ case "--snapshot":
         writeError("no wallpapers found; run walle list to check the library")
         exit(1)
     }
-    let current = setter.currentWallpaperURL()?.path
+    let current = currentSourcePath()
     let view = CorridorView(frame: CGRect(x: 0, y: 0, width: width, height: height),
                             config: config,
                             provider: makeProvider(library: library,
@@ -225,6 +281,27 @@ case "--selftest":
     }
     exit(0)
 
+case "--display-info":
+    // Display geometry for commands that must size an image before handing it to
+    // NSWorkspace. Kept here because only the AppKit binary can ask NSScreen.
+    let active = NSScreen.screens.first { $0.frame.contains(NSEvent.mouseLocation) }
+        ?? NSScreen.main
+    let screens: [[String: Any]] = NSScreen.screens.map { screen in
+        let frame = screen.frame
+        let backing = Double(screen.backingScaleFactor)
+        return [
+            "width": Double(frame.width),
+            "height": Double(frame.height),
+            "backingScale": backing,
+            "pixelWidth": Int((frame.width * backing).rounded()),
+            "pixelHeight": Int((frame.height * backing).rounded()),
+            "active": screen === active,
+            "main": screen === NSScreen.main,
+        ]
+    }
+    emit(["screens": screens])
+    exit(0)
+
 case "--thumb-size":
     // What size thumbnail the picker will actually request for this display and library.
     // The walle CLI asks for this so the cache it builds matches, instead of the user
@@ -262,7 +339,7 @@ case "--dump-geometry":
     let width = value(of: "--width", in: rest).flatMap(Double.init) ?? 1512
     let height = value(of: "--height", in: rest).flatMap(Double.init) ?? 982
     let transition = transitionValue(rest)
-    let current = setter.currentWallpaperURL()?.path
+    let current = currentSourcePath()
     let engine = LayoutEngine(config: config,
                               screen: ScreenMetrics(width: width, height: height),
                               transition: transition)
@@ -289,6 +366,15 @@ case "--pick":
         exit(0)
     }
 
+    // Keep the hidden cache honest: deleted sources lose their copies, and new
+    // images are filled by a detached refresh (no resident walle process). Do
+    // not prune underneath a fill that is already running; it prunes itself.
+    if let cacheLock = SingleInstance.acquire(at: paths.upscaleLockFile) {
+        UpscaleCache.pruneAll(paths: paths)
+        SingleInstance.release(cacheLock)
+    }
+    refreshCacheInBackground()
+
     // SIGUSR1 means "dismiss". A dispatch source is used rather than signal() because the
     // handler has to run Swift code, which is not safe from a real signal handler.
     signal(SIGUSR1, SIG_IGN)
@@ -301,7 +387,7 @@ case "--pick":
         writeError("no wallpapers found in " + config.wallpaperDirs.joined(separator: ", "))
         exit(2)
     }
-    let current = setter.currentWallpaperURL()?.path
+    let current = currentSourcePath()
     // Opens resting (or expanded when expand_on_enter is off); the arrows rotate the row and
     // Space toggles the preview.
     PickerApp.run(config: config,

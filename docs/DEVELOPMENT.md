@@ -3,7 +3,7 @@
 ## Commands
 
 ```sh
-./scripts/swift.sh test              # 152 tests in 14 suites
+./scripts/swift.sh test              # 193 tests in 17 suites
 ./scripts/swift.sh build -c release
 ./scripts/build.sh                   # release + dist/Walle.app + strip
 ./scripts/install.sh                 # build, install, link

@@ -76,6 +76,16 @@ public struct Config: Sendable, Equatable {
     public var wallpaperDirs: [String]
     public var recursive: Bool
     public var sort: SortMode
+    /// Default interval for `walle rotate`; a short duration such as `10m`.
+    public var rotationInterval: String
+
+    /// When on, apply cached ML copies transparently and keep originals untouched.
+    public var upscale: Bool
+    /// Default ML model and the replaceable upscaler executable.
+    public var upscaleModel: String
+    public var upscaleCommand: String
+    public var upscaleModels: String
+    public var upscaleTool: String
 
     public var designWidth: Double
     public var slots: Int
@@ -109,6 +119,12 @@ public struct Config: Sendable, Equatable {
         wallpaperDirs: [String] = ["~/Downloads/wallpaper"],
         recursive: Bool = true,
         sort: SortMode = .name,
+        rotationInterval: String = "30m",
+        upscale: Bool = false,
+        upscaleModel: String = "realesrgan-x4plus",
+        upscaleCommand: String = "walle-upscaler",
+        upscaleModels: String = "",
+        upscaleTool: String = "",
         designWidth: Double = 1920,
         slots: Int = 5,
         cardWidth: Double = 280,
@@ -137,6 +153,12 @@ public struct Config: Sendable, Equatable {
         self.wallpaperDirs = wallpaperDirs
         self.recursive = recursive
         self.sort = sort
+        self.rotationInterval = rotationInterval
+        self.upscale = upscale
+        self.upscaleModel = upscaleModel
+        self.upscaleCommand = upscaleCommand
+        self.upscaleModels = upscaleModels
+        self.upscaleTool = upscaleTool
         self.designWidth = designWidth
         self.slots = slots
         self.cardWidth = cardWidth
@@ -184,6 +206,34 @@ public struct Config: Sendable, Equatable {
         ConfigKey(name: "sort",
                   get: { $0.sort.rawValue },
                   set: { config, value in config.sort = SortMode.parse(value) ?? config.sort }),
+        ConfigKey(name: "rotation_interval",
+                  get: { $0.rotationInterval },
+                  set: { config, value in
+                      if let interval = RotationInterval.parse(value) {
+                          config.rotationInterval = interval.description
+                      }
+                  }),
+        ConfigKey(name: "upscale",
+                  get: { boolString($0.upscale) },
+                  set: { config, value in config.upscale = parseBool(value) ?? config.upscale }),
+        ConfigKey(name: "upscale_model",
+                  get: { $0.upscaleModel },
+                  set: { config, value in
+                      let trimmed = value.trimmingCharacters(in: .whitespaces)
+                      if !trimmed.isEmpty { config.upscaleModel = trimmed }
+                  }),
+        ConfigKey(name: "upscale_command",
+                  get: { $0.upscaleCommand },
+                  set: { config, value in
+                      let trimmed = value.trimmingCharacters(in: .whitespaces)
+                      if !trimmed.isEmpty { config.upscaleCommand = trimmed }
+                  }),
+        ConfigKey(name: "upscale_models",
+                  get: { $0.upscaleModels },
+                  set: { config, value in config.upscaleModels = value.trimmingCharacters(in: .whitespaces) }),
+        ConfigKey(name: "upscale_tool",
+                  get: { $0.upscaleTool },
+                  set: { config, value in config.upscaleTool = value.trimmingCharacters(in: .whitespaces) }),
         ConfigKey(name: "design_width",
                   get: { num($0.designWidth) },
                   set: { config, value in config.designWidth = parseDouble(value) ?? config.designWidth }),
@@ -373,6 +423,12 @@ public struct Config: Sendable, Equatable {
         clamp("expanded_neighbour_alpha", &c.expandedNeighbourAlpha, 0, 1)
         clamp("animation_ms", &c.animationMs, 0, 5000)
         if c.thumbMaxPx < 16 { warnings.append("thumb_max_px too small, using 16"); c.thumbMaxPx = 16 }
+        if RotationInterval.parse(c.rotationInterval) == nil {
+            let fallback = Config().rotationInterval
+            warnings.append("rotation_interval = \(c.rotationInterval) is not a duration, "
+                            + "using \(fallback)")
+            c.rotationInterval = fallback
+        }
         if c.wallpaperDirs.isEmpty { warnings.append("wallpaper_dirs is empty") }
         return (c, warnings)
     }

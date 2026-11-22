@@ -79,10 +79,18 @@ public final class PickerController: NSObject, NSApplicationDelegate {
         let applyPaths = paths
         let applyTo = config.applyTo
         let fillMode = config.fillMode
+        let appliesUpscale = config.upscale
+        let target = PixelSize(
+            width: Int((screen.frame.width * Double(screen.backingScaleFactor)).rounded()),
+            height: Int((screen.frame.height * Double(screen.backingScaleFactor)).rounded()))
+        let cache = appliesUpscale
+            ? UpscaleCache(paths: paths, model: config.upscaleModel, target: target)
+            : nil
 
         view.onApply = { wallpaper in
+            let displayURL = cache?.cachedURL(for: wallpaper.url) ?? wallpaper.url
             do {
-                try setter.setWallpaper(at: wallpaper.url, target: applyTo,
+                try setter.setWallpaper(at: displayURL, target: applyTo,
                                         fillMode: fillMode)
             } catch {
                 FileHandle.standardError.write(
@@ -91,10 +99,19 @@ public final class PickerController: NSObject, NSApplicationDelegate {
             }
             // Recording happens only after the desktop actually changed, and a failure
             // here is reported rather than swallowed.
-            for warning in walleRecordApplied(path: wallpaper.path, paths: applyPaths,
-                                              mode: "picker") {
+            let displayPath = displayURL.path == wallpaper.url.path
+                ? nil : displayURL.path
+            for warning in walleRecordApplied(
+                path: wallpaper.path, displayPath: displayPath,
+                paths: applyPaths, mode: "picker") {
                 FileHandle.standardError.write(
                     Data(("walle-picker: warning: " + warning + "\n").utf8))
+            }
+            if displayPath == nil, appliesUpscale {
+                UpscaleCache.refreshInBackground(
+                    paths: applyPaths,
+                    environment: ProcessInfo.processInfo.environment,
+                    enabled: true)
             }
             exit(0)
         }

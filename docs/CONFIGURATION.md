@@ -20,6 +20,12 @@ one does.
 | `wallpaper_dirs` | `~/Downloads/wallpaper` | colon-separated roots; a literal `:` is written `\:` |
 | `recursive` | `true` | descend into subdirectories |
 | `sort` | `name` | `name`, `mtime` or `random` |
+| `rotation_interval` | `30m` | default interval for `walle rotate`; `30s`, `10m`, `2h` |
+| `upscale` | `false` | `on`: transparent hidden ML cache; `off`: originals |
+| `upscale_model` | `realesrgan-x4plus` | default model for `walle upscale` |
+| `upscale_command` | `walle-upscaler` | replaceable ML backend executable |
+| `upscale_models` | *(empty)* | model directory; empty auto-detects |
+| `upscale_tool` | *(empty)* | `upscayl-bin` path; empty auto-detects |
 | `design_width` | `1920` | screen width the design units are authored against |
 | `slots` | `5` | cards in the row; must be odd |
 | `card_width` | `280` | card width at the vertical centre |
@@ -47,7 +53,16 @@ one does.
 
 Out-of-range values are clamped and reported as warnings rather than crashing the picker. `slots`
 is forced odd (a true centre slot); an even library gets one extra slot, deliberately duplicating a
-wallpaper on both sides of the centre.
+wallpaper on both sides of the centre. `fill_mode` is also the default `--mode` for
+explicit `walle upscale` exports.
+
+`upscale = on` is the transparent cache mode: the picker still shows the paths in
+`wallpaper_dirs`, but applies a cached HEIC copy from the app's data directory. The fill
+runs in the background (`walle upscale on` returns immediately; `--wait` blocks). New
+images and new directories are picked up by a refresh on the next picker open or `dir`
+change; deleted or changed sources have their cached copies removed. When the fill
+finishes, the current source is quietly switched to its cached copy. `upscale = off`
+applies the originals again. The cache is hidden and does not change the directory list.
 
 ## Some useful settings
 
@@ -55,6 +70,10 @@ wallpaper on both sides of the centre.
 walle config set card_skew -0.4            # more slanted
 walle config set card_skew 0               # upright rectangles
 walle config set animation_ms 180          # snappier
+walle config set rotation_interval 10m     # default for walle rotate
+walle config set upscale on                # cache ML copies behind the library
+walle config set upscale_model 4xLSDIR     # default ML model
+walle config set upscale_models ~/models   # custom .bin/.param directory
 walle config set slots 7                   # more cards (must be odd)
 walle config set apply_to active           # only the screen under the pointer
 walle config set fill_mode fit             # show the whole image

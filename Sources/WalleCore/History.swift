@@ -18,12 +18,17 @@ public struct HistoryEntry: Codable, Sendable, Equatable {
 /// Small mutable state the picker restores between launches.
 public struct WalleState: Codable, Sendable, Equatable {
     public var schemaVersion: Int
+    /// The source image the user chose; library navigation always uses this.
     public var lastAppliedPath: String?
+    /// The actual file handed to NSWorkspace (an ML cache copy when upscale is on).
+    public var lastDisplayPath: String?
     public var lastFocusedIndex: Int?
 
-    public init(schemaVersion: Int = 1, lastAppliedPath: String? = nil, lastFocusedIndex: Int? = nil) {
+    public init(schemaVersion: Int = 1, lastAppliedPath: String? = nil,
+                lastDisplayPath: String? = nil, lastFocusedIndex: Int? = nil) {
         self.schemaVersion = schemaVersion
         self.lastAppliedPath = lastAppliedPath
+        self.lastDisplayPath = lastDisplayPath
         self.lastFocusedIndex = lastFocusedIndex
     }
 }

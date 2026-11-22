@@ -7,9 +7,11 @@ Sway or Niri, this is the macOS equivalent. Press a hotkey and a row of slanted 
 appears over your desktop; move with the arrow keys; press Enter and it becomes your wallpaper,
 permanently.
 
-- **Two small binaries** — 524 KB and 640 KB, no dependencies, nothing installed at runtime
+- **Three small binaries** — CLI, picker and the replaceable ML backend; no runtime
+  dependencies for normal use
 - **No UI besides the picker** — no dock icon, no menu bar item, no preferences window
-- **No background process** — zero processes and zero CPU when the picker is closed
+- **No daemon** — zero processes and zero CPU unless you are running the picker,
+  `walle rotate`, or a cache fill (which exits when done)
 - **Keyboard first** — configured from the command line, driven from the keyboard
 - **Quick** — ~130 ms from hotkey to window, ~95 MB while open
 
@@ -63,6 +65,9 @@ installer flag are in **[docs/INSTALL.md](docs/INSTALL.md)**.
 ```sh
 walle                      # open the picker
 walle next | prev | random # apply the next, previous or a random wallpaper
+walle rotate 10m           # change wallpaper every 10 minutes until Ctrl-C
+walle upscale on           # cache ML copies behind the library, hidden
+walle upscale --all        # ML-upscale to HEIC, originals untouched
 walle set <path>           # apply one file; --last re-applies the newest that still exists
 walle current              # print the current desktop wallpaper
 walle list | dirs          # what was found, and where
@@ -75,6 +80,13 @@ walle doctor
 ```
 
 Every command, `--json`, and the exit codes are in **[docs/USAGE.md](docs/USAGE.md)**.
+
+ML upscaling uses a replaceable `walle-upscaler` backend. The default is Real-ESRGAN
+**x4plus** through Upscayl's `upscayl-bin`; install Upscayl or point `upscale_tool` /
+`upscale_models` at the binary and model files. `walle upscale on` caches in the background
+and returns immediately; the picker stays usable, new images and directories are picked up
+automatically, and cached copies replace the originals once ready. Custom models and the
+job/result contract are in **[docs/UPSCALING.md](docs/UPSCALING.md)**.
 
 ## Two pieces of macOS worth knowing
 
@@ -94,15 +106,18 @@ authoritative. `walle config list` prints every current value. Details:
 | [Usage](docs/USAGE.md) | commands, JSON, exit codes |
 | [Configuration](docs/CONFIGURATION.md) | every key, defaults, examples |
 | [Wallpapers and Spaces](docs/SPACES.md) | per-Space behaviour, dry run, prune |
+| [Upscaling](docs/UPSCALING.md) | ML backend, custom models, HEIC, measured comparison |
 | [Troubleshooting](docs/TROUBLESHOOTING.md) | hotkey, focus, empty library, stale Spaces |
-| [How it works](docs/HOW-IT-WORKS.md) | the two binaries, geometry, thumbnails |
+| [How it works](docs/HOW-IT-WORKS.md) | the three binaries, geometry, thumbnails |
 | [Performance](docs/PERFORMANCE.md) | measurements and method |
 | [Development](docs/DEVELOPMENT.md) | tests, tools, release process |
 
 ## Non-goals
 
 No video or live wallpapers, no online search, no colour filtering, no menu bar item, no
-auto-rotation daemon. Each would mean a permanently running process or a much larger surface.
+persistent daemon. `walle rotate` only runs while you are running it; `walle upscale on`
+starts a detached cache fill that exits when done. Each avoided feature would mean a
+permanently running process or a much larger surface.
 
 ## License
 

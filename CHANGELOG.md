@@ -2,6 +2,26 @@
 
 Notable changes to walle. Versions follow semantic versioning.
 
+## [Unreleased]
+
+### Added
+
+- `walle rotate [interval]` applies the next wallpaper and keeps rotating until stopped;
+  `--once`, `--dry-run` and `--json` are supported. A picker selection becomes the new
+  starting point, and `rotation_interval` (default `30m`) stores the default interval.
+- `walle upscale` now uses a replaceable `walle-upscaler` ML backend (Real-ESRGAN x4plus
+  by default), writes HEIC with the source ICC profile, and accepts custom `.bin`/`.param`
+  models through `--model` / `--models` and the `upscale_*` config keys.
+- `walle upscale on` enables a hidden, non-blocking cache: the picker applies the source
+  while the fill runs, then cached copies silently; `--wait` keeps the blocking mode.
+  `dir add` / `dir use` start the same background refresh.
+- A detached refresh on picker open fills new or stale images and starts one more pass for
+  changes that arrive mid-fill. Deleted sources have their cached copies pruned.
+- `walle-picker --display-info` reports screen geometry as JSON so the CLI can size images
+  without linking AppKit.
+- `docs/UPSCALING.md` covers the backend contract, custom models, runtime and the model
+  bake-off. The old vImage Lanczos command was removed.
+
 ## [1.1.0] — 2026-10-18
 
 ### Added

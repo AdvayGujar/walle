@@ -214,6 +214,7 @@ struct StateStoreTests {
 
             let filled = WalleState(schemaVersion: 2,
                                     lastAppliedPath: "/wall/one.png",
+                                    lastDisplayPath: "/cache/one.heic",
                                     lastFocusedIndex: 7)
             try store.save(filled)
             #expect(store.load() == filled)
